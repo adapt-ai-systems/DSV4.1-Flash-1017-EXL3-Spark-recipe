@@ -229,6 +229,7 @@ sha256 of the three small ones.
 
 | Path | What |
 |---|---|
+| `AGENTS.md` | short brief for AI agents: what this serves, the Do-not list, where the commands are |
 | `scripts/env.sh` | pins (model revision, image, fork/plugin SHAs), paths, serve knobs |
 | `scripts/download_and_verify.sh` | hf_xet download at the pinned revision + sha256 verification |
 | `scripts/build_image.sh` | base engine + forks + shim image build |
