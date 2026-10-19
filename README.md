@@ -133,14 +133,20 @@ completions, `max_tokens 8`):
 | 7,631 | 6.586 s | 1,159 |
 | 27,949 | 22.556 s | 1,239 |
 
-| Varied-text prefill on the current configuration | TODO(confirm) |
-|---|---|
+Varied-text ladder on the serving configuration (`bench/prefill_varied_probe.py`,
+python stdlib source text, plain completions, chunk 2112 / threshold 2047):
 
-The varied-text ladder (`bench/prefill_varied_probe.py`, python stdlib source,
-2K/8K/16K/30K) is being measured on the serving configuration; the row above is
-deliberately empty until it lands. The repeated-text figures are not a
-substitute: a repeated sentence routes to few experts, so they likely over-read
-what real prompts get.
+| Prompt tokens (approx.) | Prefill tok/s |
+|---|---:|
+| 1,600 | 533 |
+| 7,000 | 718 |
+| 14,000 | 720 |
+| 24,000 | 963 |
+
+Use ~720 tok/s as the real-text figure. A repeated sentence reads higher on the
+same server (8K: 1,262 tok/s) because it routes to few experts. A 4096-token
+chunk (threshold 4090; the threshold must be chunk - 6) was measured and roughly
+halves varied-text prefill (446 vs 718 tok/s at ~7K), so 2112 stays.
 
 ## Quality and correctness
 
