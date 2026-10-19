@@ -1,0 +1,61 @@
+#!/bin/bash
+# Shared pins and paths. Source this; do not execute it.
+#
+# Every value here is the measured configuration. Changing one without
+# re-measuring means the numbers in README.md no longer describe what you serve.
+
+# ---- model ----------------------------------------------------------------
+MODEL_REPO="vcruz305/DSV4.1-Flash-1017-SAGE-EXL3-1.62bpw"
+# Revision the recipe was measured on. The Hub's main is pinned here so a
+# download is reproducible; see README "Pack revision" for the check.
+MODEL_REV="04f7138b8ce3c82399eb4900d8bad12e40a0a0da"
+MODEL_NAME="dsv41-1.62bpw-v3"          # directory name under $MODELS_DIR
+
+# ---- images ---------------------------------------------------------------
+# Base engine: Christopher Owen's spark-ds41f r6w (upstreams pinned at 2dc95329),
+# built per justincasey/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark docker/Dockerfile.
+# That Dockerfile's own base is vllm/vllm-openai@sha256:3cf14c52765a0f0c2f09035e05fa79e1e4b2f9788b64afa90fa41c1ff12d29cf.
+BASE_IMAGE="${BASE_IMAGE:-dsv41-1017-ds41f:r6w}"
+IMAGE="${IMAGE:-dsv41-1017-exl3:r6w}"
+
+# Runtime forks baked into the layer above the base, pinned to the commits whose
+# file hashes match the measured server (branches named below).
+FORK_REPO="https://github.com/vcruz305/exllamav3.git"
+FORK_BRANCH="feat/dsv41-1017-tp1-moe"
+FORK_REF="${FORK_REF:-42981e660d18bd893fb1bf732905fafa2a9fe97c}"          # exllamav3: mixed-K unified MoE + aarch64 guards
+PLUGIN_REPO="https://github.com/vcruz305/vllm-exl3.git"
+PLUGIN_BRANCH="feat/dsv41-1017-tp1"
+PLUGIN_REF="${PLUGIN_REF:-30e8b941376ce2d43bc8438439937c4809106635}"    # vllm-exl3: Exl3MoEMethod / ATS loader
+
+# MoE tile-K the served kernel was compiled at. It is a compile-time constant in
+# the fork, so the build rewrites the header before compiling.
+MOE_TILESIZE_K="${MOE_TILESIZE_K:-16}"
+
+# ---- paths ----------------------------------------------------------------
+RECIPE_HOME="${RECIPE_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+MODELS_DIR="${MODELS_DIR:-$HOME/models}"
+MODEL_DIR="${MODEL_DIR:-$MODELS_DIR/$MODEL_NAME}"
+CACHE_DIR="${CACHE_DIR:-$HOME/.cache/dsv41-ds41f}"
+ALIAS_DIR="${ALIAS_DIR:-$CACHE_DIR/alias-cold}"
+RUNS_DIR="${RUNS_DIR:-$RECIPE_HOME/runs}"
+
+# ---- serve ----------------------------------------------------------------
+CONTAINER="${CONTAINER:-dsv41-tp1}"
+API_PORT="${API_PORT:-8000}"
+MAXLEN="${MAXLEN:-32768}"
+KVB="${KVB:-1073741824}"        # 1 GiB KV pool = 255,211 tokens
+MNBT="${MNBT:-2112}"
+LPT="${LPT:-2047}"
+MTP_K="${MTP_K:-5}"
+CAPTURE_SIZES="${CAPTURE_SIZES:-1,2,3,4,5,6,7}"
+CG_MODE="${CG_MODE:-FULL_DECODE_ONLY}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
+ATS_LAYERS="${ATS_LAYERS:-38,39}"
+ATS_MTP="${ATS_MTP:-1}"
+ATS_EMBED="${ATS_EMBED:-1}"
+
+export MODEL_REPO MODEL_REV MODEL_NAME BASE_IMAGE IMAGE
+export FORK_REPO FORK_BRANCH FORK_REF PLUGIN_REPO PLUGIN_BRANCH PLUGIN_REF MOE_TILESIZE_K
+export RECIPE_HOME MODELS_DIR MODEL_DIR CACHE_DIR ALIAS_DIR RUNS_DIR
+export CONTAINER API_PORT MAXLEN KVB MNBT LPT MTP_K CAPTURE_SIZES CG_MODE GPU_MEM_UTIL
+export ATS_LAYERS ATS_MTP ATS_EMBED

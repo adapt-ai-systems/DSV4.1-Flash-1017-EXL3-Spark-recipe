@@ -1,0 +1,77 @@
+# Serving image for vcruz305/DSV4.1-Flash-1017-SAGE-EXL3-1.62bpw on one DGX Spark.
+#
+#   base : dsv41-1017-ds41f:r6w   Christopher Owen's spark-ds41f r6w (upstreams
+#                                 pinned at 2dc95329), built per
+#                                 justincasey/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark
+#                                 docker/Dockerfile. The FP8 block-32 TileLang
+#                                 linears, attention, Engram io_uring reader and
+#                                 the loader stay exactly as that recipe pinned them.
+#   +    : vcruz305/vllm-exl3     Exl3MoEMethod / ATS loader
+#   +    : vcruz305/exllamav3     exl3_moe_mixedk (unified mixed-K), aarch64 guards
+#   +    : dsv41_exl3_shim        quant-config name shim, no vLLM source changes
+#
+# Nothing in the base image is replaced.
+
+ARG BASE_IMAGE=dsv41-1017-ds41f:r6w
+FROM ${BASE_IMAGE}
+
+ARG PLUGIN_REPO=https://github.com/vcruz305/vllm-exl3.git
+ARG PLUGIN_REF=30e8b941376ce2d43bc8438439937c4809106635
+ARG FORK_REPO=https://github.com/vcruz305/exllamav3.git
+ARG FORK_REF=42981e660d18bd893fb1bf732905fafa2a9fe97c
+ARG MOE_TILESIZE_K=16
+
+ENV CUDA_HOME=/usr/local/cuda \
+    TORCH_CUDA_ARCH_LIST=12.1a \
+    MAX_JOBS=8 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN set -eux; \
+    if ! command -v git >/dev/null 2>&1; then \
+        apt-get update; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git; \
+        rm -rf /var/lib/apt/lists/*; \
+    fi; \
+    git clone "$PLUGIN_REPO" /opt/vllm-exl3; \
+    git -C /opt/vllm-exl3 checkout "$PLUGIN_REF"; \
+    git -C /opt/vllm-exl3 rev-parse HEAD
+
+# The served MoE kernel instance is compiled at tile-K 16, a #define in the fork,
+# so the build rewrites it before compiling rather than passing a flag.
+RUN set -eux; \
+    git clone "$FORK_REPO" /opt/exllamav3; \
+    git -C /opt/exllamav3 checkout "$FORK_REF"; \
+    git -C /opt/exllamav3 rev-parse HEAD; \
+    PATCHER=/opt/vllm-exl3/tools/patch_exllamav3_aarch64.py; \
+    if [ -f "$PATCHER" ]; then \
+        sed -i 's|raise SystemExit(f"expected one x86 pause block in {path}")|print(f"already guarded (x86 pause): {path}")|' "$PATCHER"; \
+        python3 "$PATCHER" /opt/exllamav3/exllamav3/exllamav3_ext; \
+    fi; \
+    F=/opt/exllamav3/exllamav3/exllamav3_ext/quant/exl3_moe_common.cuh; \
+    sed -i "s/#define MOE_TILESIZE_K 32/#define MOE_TILESIZE_K ${MOE_TILESIZE_K}/" "$F"; \
+    grep -n "define MOE_TILESIZE_K" "$F"; \
+    CUSPARSE_DIR="$(find /usr/local/lib/python3*/dist-packages/nvidia -name cusparse.h -exec dirname {} \; 2>/dev/null | head -1)"; \
+    if [ -z "$CUSPARSE_DIR" ]; then echo "ERROR: cusparse.h not found under NVIDIA Python packages" >&2; exit 2; fi; \
+    export CPATH="$CUSPARSE_DIR${CPATH:+:$CPATH}"; \
+    cd /opt/exllamav3; \
+    python3 -m pip install --no-cache-dir --no-build-isolation --no-deps .
+
+RUN set -eux; \
+    CUSPARSE_DIR="$(find /usr/local/lib/python3*/dist-packages/nvidia -name cusparse.h -exec dirname {} \; 2>/dev/null | head -1)"; \
+    export CPATH="$CUSPARSE_DIR${CPATH:+:$CPATH}"; \
+    export EXL3_EXT_INCLUDE=/opt/exllamav3/exllamav3/exllamav3_ext; \
+    cd /opt/vllm-exl3; \
+    python3 -m pip install --no-cache-dir --no-build-isolation --no-deps .
+
+COPY shim /opt/dsv41-shim
+RUN set -eux; \
+    cd /opt/dsv41-shim; \
+    python3 -m pip install --no-cache-dir --no-build-isolation --no-deps .
+
+LABEL local.dsv41.exl3.base="${BASE_IMAGE}" \
+      local.dsv41.exl3.vllm-exl3="${PLUGIN_REF}" \
+      local.dsv41.exl3.exllamav3="${FORK_REF}" \
+      local.dsv41.exl3.moe-tilesize-k="${MOE_TILESIZE_K}" \
+      local.dsv41.exl3.shim="dsv41_exl3_shim:register (quantization exl3_dsv41)"
+
+ENTRYPOINT []
