@@ -45,7 +45,8 @@ touching the box.
 
 The engine is a derived image: `dsv41-1017-ds41f:r6w` (Christopher Owen's
 spark-ds41f r6w, upstreams pinned at `2dc95329`) plus our two forks plus a
-quant-config shim. Nothing in the base image is replaced.
+quant-config shim, plus TP1 decode tiles for the base image's FP8 TileLang
+linears (`docker/tp1_decode_tiles.py`). Nothing else in the base image is replaced.
 
 | Flag | Why it is there |
 |---|---|
@@ -57,6 +58,7 @@ quant-config shim. Nothing in the base image is replaced.
 | `VLLM_DS41_L2_PREFETCH=0` | prefetch measured 8.7 ms/step of work that hid nothing |
 | `VLLM_EXL3_ATS_ALIAS=1` + `_LAYERS=38,39` + `_MTP=1` + `_EMBED=1` | ATS aliasing on, with the per-expert manifest in `/alias`. When the manifest lists experts (the cold set does), it decides membership and the layer list is ignored; the values are kept as measured |
 | `--compilation-config cudagraph_mode=FULL_DECODE_ONLY`, sizes 1..7 | decode runs as full CUDA graphs (measured +11-14 % over eager) |
+| TP1 decode tiles (`docker/tp1_decode_tiles.py`, baked into the image) | the base image's decode tile tables are keyed on TP4 shapes; at TP1 `block_K=256` for wo_b / wq_b / shared gate_up / down and a 32x256 tile for WO-A's 16-row bucket: -3.4 ms/step, bitwise-identical outputs |
 | `--max-num-batched-tokens 2112 --long-prefill-token-threshold 2047` | the aligned-prefill chunk; 8192 does not fit |
 | `--kv-cache-memory-bytes 1073741824` | 1 GiB KV = 255,211 tokens at the engine's `auto` (bf16) cache dtype |
 | `--no-enable-prefix-caching` | measured off |
@@ -111,9 +113,13 @@ run to run, so compare `ms/step` first.
 | DSpark k=6, grouped MoE, whole-layer alias (38/39 + MTP) | 296-427 | 4.7-5.7 | 13.5 |
 | + cold-expert ATS alias | 202.8 | 5.02 | 24.2 |
 | + second kernel variant (k4) | 188.8-191.2 | 5.00 | 25.7-27.5 |
-| + tile-K 16 build, k=5 (serving) | 140.0-143.5 | 4.35-4.67 | 31.3-34.0 |
+| + tile-K 16 build, k=5 | 140.0-145.6 | 4.35-4.74 | 31.3-34.0 |
+| + TP1 decode tiles for the non-MoE linears (serving) | 141.0-141.8 | 4.14-4.58 | 29.5-32.4 |
 
-Serving configuration per class, two ship boots: prose 137.6-138.4 ms/step,
+The decode-tile row is the mean of two boots alternated with two boots of the row above
+(141.4 vs 144.8 ms/step); its tok/s spread is acceptance, not kernel speed.
+
+Tile-K 16 configuration per class, two ship boots: prose 137.6-138.4 ms/step,
 code 143.2-146.2, structured 142.2-144.5.
 
 Where the step time goes at tile-K 16 (nsys, 974 decode steps, 2,657 kernels/step):
@@ -239,7 +245,8 @@ sha256 of the three small ones.
 | `scripts/env.sh` | pins (model revision, image, fork/plugin SHAs), paths, serve knobs |
 | `scripts/download_and_verify.sh` | hf_xet download at the pinned revision + sha256 verification |
 | `scripts/build_image.sh` | base engine + forks + shim image build |
-| `docker/Dockerfile` | the layer: vllm-exl3, exllamav3 at tile-K 16, shim |
+| `docker/Dockerfile` | the layer: vllm-exl3, exllamav3 at tile-K 16, shim, TP1 decode tiles |
+| `docker/tp1_decode_tiles.py` | TP1 decode tile tables for the base image's FP8 TileLang linears |
 | `scripts/build_cold_alias.sh` | builds the cold-expert side file from your own pack copy |
 | `tools/ats_build_alias.py` | the gatherer (64-byte alignment, manifest, selection) |
 | `configs/cold-alias-selection.json` | the measured 1,380-expert membership |

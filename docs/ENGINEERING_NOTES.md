@@ -83,7 +83,13 @@ the step; the membership is `configs/cold-alias-selection.json`.
   `FULL_DECODE_ONLY` at `--max-num-seqs 1`.
 - **`L2_PREFETCH=0` is kept**: the prefetch measured 8.7 ms/step of work that
   hid nothing (the step runs effectively single-stream, kernel overlap 1.04).
-- **Non-MoE linear overlay: dead even, twice** (-3.3 % at a 30 % non-MoE share,
+- **TP1 decode tiles for the non-MoE FP8 linears: -3.4 ms/step, shipped.** All six
+  linears are `long_scoreboard`-bound at 9-36 % occupancy; the base image's tile tables
+  are keyed on TP4 shapes, so TP1 ran the default `block_K=128`. A 62-config L2-cold
+  sweep found `block_K=256` (-3.8 to -4.9 %) and, for WO-A's 16-row bucket, 32x256x2
+  (-14.3 %); every winner is bitwise identical. In model: 141.4 vs 144.8 ms/step over
+  two alternating boots per arm.
+- **An earlier non-MoE overlay (split-K workspace + a WO-A tile): dead even, twice** (-3.3 % at a 30 % non-MoE share,
   +0.6 % at 42 %). Not shipped: it does not pay for its mount.
 - **A tilelang split-K variant failed its correctness gate**: 78 % top-1
   agreement and max |dlogprob| 1.86 against the non-speculative reference, i.e.

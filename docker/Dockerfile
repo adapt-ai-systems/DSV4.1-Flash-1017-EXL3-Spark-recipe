@@ -10,7 +10,11 @@
 #   +    : vcruz305/exllamav3     exl3_moe_mixedk (unified mixed-K), aarch64 guards
 #   +    : dsv41_exl3_shim        quant-config name shim, no vLLM source changes
 #
-# Nothing in the base image is replaced.
+#   +    : TP1 decode tiles       docker/tp1_decode_tiles.py edits the base image's
+#                                 TileLang decode tile tables (gemm.py, wo.py) for
+#                                 TP1 shapes; bitwise-identical outputs, -3.4 ms/step.
+#
+# Nothing else in the base image is replaced.
 
 ARG BASE_IMAGE=dsv41-1017-ds41f:r6w
 FROM ${BASE_IMAGE}
@@ -62,6 +66,10 @@ RUN set -eux; \
     export EXL3_EXT_INCLUDE=/opt/exllamav3/exllamav3/exllamav3_ext; \
     cd /opt/vllm-exl3; \
     python3 -m pip install --no-cache-dir --no-build-isolation --no-deps .
+
+COPY docker/tp1_decode_tiles.py /opt/dsv41-tools/tp1_decode_tiles.py
+RUN python3 /opt/dsv41-tools/tp1_decode_tiles.py \
+        /opt/spark3/candidate/vllm/vllm/models/deepseek_v4_1/tilelang
 
 COPY shim /opt/dsv41-shim
 RUN set -eux; \
