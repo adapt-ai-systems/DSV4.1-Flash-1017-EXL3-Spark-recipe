@@ -42,8 +42,8 @@ RUNS_DIR="${RUNS_DIR:-$RECIPE_HOME/runs}"
 # ---- serve ----------------------------------------------------------------
 CONTAINER="${CONTAINER:-dsv41-tp1}"
 API_PORT="${API_PORT:-8000}"
-MAXLEN="${MAXLEN:-229376}"      # 56 x 4096; fits the 1 GiB pool with room for the DSpark rows
-KVB="${KVB:-1073741824}"        # 1 GiB KV pool = 236,089 tokens (boot log, GPU KV cache size)
+MAXLEN="${MAXLEN:-229376}"      # 56 x 4096; 225K retrieval measured; 32768 is ~3 % faster on short prompts
+KVB="${KVB:-1073741824}"        # 1 GiB KV pool (vLLM reports 760,070 tokens at MAXLEN=229376)
 MNBT="${MNBT:-2112}"
 LPT="${LPT:-2047}"
 MTP_K="${MTP_K:-5}"
