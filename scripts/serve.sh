@@ -75,7 +75,14 @@ for k in $SYSCTL_KEYS; do
 done
 
 sudo -n sysctl -q vm.compaction_proactiveness=0 vm.watermark_boost_factor=0 vm.swappiness=0
-sudo -n swapoff -a && sudo -n swapon -a
+# swapoff fails when any page is still swapped in (common on a box that has been
+# up a while). Under `set -e` that aborted the launch *after* the sysctls were
+# changed and before the guard was armed. Warn and keep the pre-boot base.
+if ! sudo -n swapoff -a; then
+  echo "WARNING: swapoff -a failed; swap is still in use. Continuing, but the" >&2
+  echo "         guard's swap-growth check will measure from a non-zero base." >&2
+fi
+sudo -n swapon -a 2>/dev/null || true
 sync; sudo -n sh -c 'echo 1 > /proc/sys/vm/drop_caches'
 sleep 3
 
@@ -83,6 +90,12 @@ BASE_SWAP=$(awk '/^SwapTotal:/{t=$2}/^SwapFree:/{f=$2}END{printf "%d", t-f}' /pr
 echo "MemAvailable: $(awk '/^MemAvailable:/{printf "%.1f", $2/1048576}' /proc/meminfo) GiB  swap_base: $BASE_SWAP KiB"
 
 sudo -n docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+
+# Optional compile-thread overrides for a cold-cache first boot. Forwarded only
+# when set: the measured server did not set them, and TVM reads an explicit value.
+TVM_ENV=()
+[ -n "${TVM_NUM_THREADS:-}" ] && TVM_ENV+=(-e "TVM_NUM_THREADS=$TVM_NUM_THREADS")
+[ -n "${TVM_BIND_THREADS:-}" ] && TVM_ENV+=(-e "TVM_BIND_THREADS=$TVM_BIND_THREADS")
 
 sudo -n docker run -d --name "$CONTAINER" \
   --gpus all \
@@ -97,8 +110,11 @@ sudo -n docker run -d --name "$CONTAINER" \
   -v "$HERE/serve_inner.sh":/root/serve.sh:ro \
   -p "$API_PORT":8000 \
   -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
-  -e B12X_AUTOTUNE=0 -e B12X_BIND_COMPILE_WORKERS=2 -e B12X_STATE_COMPILE_WORKERS=2 \
-  -e B12X_WEIGHTS_COMPILE_WORKERS=4 \
+  -e B12X_AUTOTUNE=0 \
+  -e B12X_BIND_COMPILE_WORKERS="${B12X_BIND_COMPILE_WORKERS:-2}" \
+  -e B12X_STATE_COMPILE_WORKERS="${B12X_STATE_COMPILE_WORKERS:-2}" \
+  -e B12X_WEIGHTS_COMPILE_WORKERS="${B12X_WEIGHTS_COMPILE_WORKERS:-4}" \
+  "${TVM_ENV[@]}" \
   -e B12X_COMPILE_CACHE_DIR="$JIT/b12x/compile" \
   -e B12X_CUTE_COMPILE_CACHE_DIR="$JIT/b12x/cute" \
   -e B12X_DENSE_SPLITK_TURBO=1 -e B12X_W4A8_TINY_DECODE=0 \
@@ -143,7 +159,11 @@ sudo -n docker run -d --name "$CONTAINER" \
   -e GPU_MEM_UTIL="$GPU_MEM_UTIL" \
   --entrypoint /bin/bash \
   "$IMAGE" /root/serve.sh \
-  >"$RUN/container_id.txt" 2>&1
+  >"$RUN/container_id.txt" 2>&1 || {
+    echo "docker run failed:" >&2
+    cat "$RUN/container_id.txt" >&2
+    exit 1
+  }
 
 echo "LAUNCHED $CONTAINER ($(cat "$RUN/container_id.txt"))"
 echo "run dir: $RUN"
@@ -152,5 +172,10 @@ echo "run dir: $RUN"
 echo "preflight" >"$RUN/stage"
 sudo -n setsid nohup bash "$HERE/guard.sh" watch "$CONTAINER" "$RUN/stage" "$RUN/guard.log" 524288 "$BASE_SWAP" \
   >/dev/null 2>&1 &
+for _ in $(seq 1 100); do grep -q "guard: armed" "$RUN/guard.log" 2>/dev/null && break; sleep 0.1; done
+if ! grep -q "guard: armed" "$RUN/guard.log" 2>/dev/null; then
+  echo "WARNING: the memory guard did not arm (see $RUN/guard.log). The serve is UNGUARDED;" >&2
+  echo "         stop it with: bash scripts/guard.sh stop" >&2
+fi
 echo "guard armed: MemAvailable floor 0.5 GiB, swap growth <= 64 MiB, 0.05 s"
 echo "watch: bash scripts/guard.sh status   stop: bash scripts/guard.sh stop"

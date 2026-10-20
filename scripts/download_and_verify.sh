@@ -27,6 +27,18 @@ export HF_HUB_ENABLE_HF_TRANSFER=0   # xet path, not the legacy transfer
 
 mkdir -p "$MODEL_DIR"
 
+# The pack is 326.6 GB (two shards are ~101.5 GB each). Refuse to start a download
+# that cannot finish: an ENOSPC halfway leaves a directory that looks downloaded.
+# Bytes already in $MODEL_DIR (a resumed download) count toward the total.
+PACK_BYTES=326590218983
+have_bytes=$(du -sb "$MODEL_DIR" | cut -f1)
+need_kib=$(( (PACK_BYTES - have_bytes) / 1024 + 4 * 1024 * 1024 ))   # + 4 GiB slack
+avail_kib=$(df -k --output=avail "$MODEL_DIR" | tail -1 | tr -dc '0-9')
+if [ "${avail_kib:-0}" -lt "$need_kib" ]; then
+  echo "not enough space on $(df --output=target "$MODEL_DIR" | tail -1): need $((need_kib / 1048576)) GiB more, have $((avail_kib / 1048576)) GiB" >&2
+  exit 1
+fi
+
 python3 - "$MODEL_REPO" "$MODEL_REV" "$MODEL_DIR" <<'PY'
 import os
 import sys
@@ -34,13 +46,23 @@ import sys
 from huggingface_hub import snapshot_download
 
 from huggingface_hub import HfApi
-from huggingface_hub.utils import RevisionNotFoundError
+from huggingface_hub.utils import HfHubHTTPError, RevisionNotFoundError
 
 repo, rev, dest = sys.argv[1], sys.argv[2], sys.argv[3]
 api = HfApi(token=os.environ["HF_TOKEN"])
+def _gone(exc: Exception) -> bool:
+    # A replaced history is a 404 on the revision. Anything else (auth, gating,
+    # network) must surface, not silently switch to another revision.
+    if isinstance(exc, RevisionNotFoundError):
+        return True
+    resp = getattr(exc, "response", None)
+    return getattr(resp, "status_code", None) == 404 and "Repository Not Found" not in str(exc)
+
 try:
     api.model_info(repo, revision=rev)
-except RevisionNotFoundError:
+except HfHubHTTPError as exc:
+    if not _gone(exc):
+        raise
     main = api.model_info(repo).sha
     print(f"WARNING: pinned revision {rev[:12]} no longer exists on the Hub "
           f"(history replaced); downloading main = {main[:12]} instead. "
