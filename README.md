@@ -247,9 +247,16 @@ re-bench after a warmup request before trusting a slow first boot.
   `chat_template.jinja` and neither `tokenizer_config.json` nor `tokenizer.json`
   carries a `chat_template` field. `--tokenizer-mode deepseek_v41` does not need
   one: `vllm/tokenizers/deepseek_v41.py` overrides `apply_chat_template` and
-  encodes the conversation in code. This is read from the engine source, not from a
-  served request -- all speed figures here are plain `/v1/completions`. If you point
-  the server at a different tokenizer mode, supply a template or chat will 400.
+  encodes the conversation in code. Checked on a served request (fresh download,
+  this recipe's flags): `/v1/chat/completions` answers, the thinking comes back in
+  `message.reasoning` (`usage.completion_tokens_details.reasoning_tokens` counts it),
+  and a request with `tools` returns `finish_reason: tool_calls` with parsed
+  arguments (`--tool-call-parser deepseek_v41`). Reasoning effort goes in
+  `chat_template_kwargs`: `{"reasoning_effort": "low"}` renders `Reasoning Effort: 50`;
+  a top-level `reasoning_effort` field is ignored and the prompt keeps the default 75
+  (checked with `/tokenize` + `/detokenize`). All speed figures here are plain
+  `/v1/completions`. If you point the server at a different tokenizer mode, supply a
+  template or chat will 400.
 - **Image build: verified by hash, not by a second clean box.** Every input of the
   baked image was compared against what the measured server mounted:
   `plugin-moe-p9b` is byte-identical to `vllm-exl3@30e8b94` (21/21 `.py`),
