@@ -62,6 +62,13 @@ The API is OpenAI-compatible at `http://<host>:8000/v1`, model id `dsv41`.
 `DRY_RUN=1 bash scripts/serve.sh` prints the full launch configuration without
 touching the box.
 
+`build_image.sh` and `serve.sh` share one image tag (`IMAGE`, default
+`dsv41-1017-exl3:r6w`). If you build under another tag, pass the same `IMAGE=` to
+`serve.sh`. `serve.sh` refuses an image whose build labels do not match this
+recipe's pins (vllm-exl3, exllamav3, MoE tile K): an older image under the default
+tag serves older shim code and fails at weight load with `no module or parameter
+named 'head'`. Rebuild it with `build_image.sh`.
+
 ## The measured flag set (do not deviate without re-measuring)
 
 The engine is a derived image: `dsv41-1017-ds41f:r6w` (Christopher Owen's

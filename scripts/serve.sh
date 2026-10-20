@@ -91,6 +91,26 @@ fi
 [ -f "$ALIAS_DIR/experts.bin" ] || { echo "alias side file not found: $ALIAS_DIR/experts.bin (run build_cold_alias.sh)" >&2; exit 1; }
 [ -f "$ALIAS_DIR/manifest.json" ] || { echo "alias manifest not found: $ALIAS_DIR/manifest.json" >&2; exit 1; }
 sudo -n docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image not found: $IMAGE (run build_image.sh)" >&2; exit 1; }
+# The image must be the one build_image.sh makes from these pins. An older image under
+# the same tag (an earlier recipe version, or a hand-built one) serves different
+# plugin/shim code, e.g. one that cannot load the v3 pack's EXL3 head, and fails at
+# weight load with "no module or parameter named 'head'".
+img_label() { sudo -n docker image inspect "$IMAGE" --format "{{index .Config.Labels \"$1\"}}" 2>/dev/null; }
+IMG_PLUGIN=$(img_label local.dsv41.exl3.vllm-exl3)
+IMG_FORK=$(img_label local.dsv41.exl3.exllamav3)
+IMG_TK=$(img_label local.dsv41.exl3.moe-tilesize-k)
+if [ "$IMG_PLUGIN" != "$PLUGIN_REF" ] || [ "$IMG_FORK" != "$FORK_REF" ] || [ "$IMG_TK" != "$MOE_TILESIZE_K" ]; then
+  echo "image $IMAGE was not built from this recipe's pins:" >&2
+  echo "  vllm-exl3 ${IMG_PLUGIN:-<none>} (want $PLUGIN_REF)" >&2
+  echo "  exllamav3 ${IMG_FORK:-<none>} (want $FORK_REF)" >&2
+  echo "  moe-tilesize-k ${IMG_TK:-<none>} (want $MOE_TILESIZE_K)" >&2
+  if [ "${ALLOW_IMAGE_MISMATCH:-0}" != "1" ]; then
+    echo "rebuild it with scripts/build_image.sh, or set IMAGE to the tag you built" >&2
+    echo "(ALLOW_IMAGE_MISMATCH=1 serves it anyway)" >&2
+    exit 1
+  fi
+  echo "ALLOW_IMAGE_MISMATCH=1: serving it anyway" >&2
+fi
 
 # ---- host memory policy (restored by guard.sh stop) ------------------------
 SYSCTL_KEYS="vm.compaction_proactiveness vm.watermark_boost_factor vm.swappiness"
