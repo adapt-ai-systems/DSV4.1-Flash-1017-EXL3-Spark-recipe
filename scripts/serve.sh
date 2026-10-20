@@ -15,15 +15,19 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN="${DRY_RUN:-0}"
 TS=$(date +%Y%m%d-%H%M%S)
 RUN="${RUN_DIR:-$RUNS_DIR/$TS}"
-JIT="$CACHE_DIR/kkref/jit"
-
-mkdir -p "$RUN" "$JIT"/{b12x/compile,b12x/cute,cute-dsl,tilelang,triton,nv-compute,vllm-r5o}
+# JIT caches (TileLang, Triton, B12X, CuTe DSL, CUDA, vLLM). $CACHE_DIR is mounted at
+# /cache, so the env vars below must name the CONTAINER path; a host path there makes
+# every compiled kernel land in the container's own filesystem and vanish with it, and
+# the next boot compiles everything again.
+JIT_HOST="$CACHE_DIR/kkref/jit"
+JIT="/cache/kkref/jit"
 
 if [ "$DRY_RUN" = "1" ]; then
   echo "DRY_RUN=1: would launch container=$CONTAINER image=$IMAGE"
   echo "  model  : $MODEL_DIR -> /models/$MODEL_NAME"
   echo "  alias  : $ALIAS_DIR -> /alias"
   echo "  run dir: $RUN -> /mem"
+  echo "  jit    : $JIT_HOST -> $JIT (via $CACHE_DIR -> /cache)"
   echo "  port   : $API_PORT"
   echo "  maxlen : $MAXLEN  kv=$KVB  mnbt=$MNBT  lpt=$LPT  mtp_k=$MTP_K"
   echo "  graphs : $CG_MODE sizes=$CAPTURE_SIZES  gpu_util=$GPU_MEM_UTIL"
@@ -55,6 +59,8 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  --hf-overrides {...exl3 routed experts + deepseek_v41_fp8 non-routed...}"
   exit 0
 fi
+
+mkdir -p "$RUN" "$JIT_HOST"/{b12x/compile,b12x/cute,cute-dsl,tilelang,triton,nv-compute,vllm-r5o}
 
 [ -d "$MODEL_DIR" ] || { echo "model dir not found: $MODEL_DIR" >&2; exit 1; }
 [ -f "$ALIAS_DIR/experts.bin" ] || { echo "alias side file not found: $ALIAS_DIR/experts.bin (run build_cold_alias.sh)" >&2; exit 1; }
