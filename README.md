@@ -247,13 +247,16 @@ side file only works because device and host memory are the same pool.
 ## Pack revision
 
 Measured against revision `7cdebca3f8a348e423ad293a2ea5cca2297ace1f`. The Hub's
-`main` is now `04f7138b8ce3c82399eb4900d8bad12e40a0a0da`, which is what
-`scripts/env.sh` pins. `7cdebca3` no longer resolves through the Hub API: the
-repo's history is a single `Initial commit` at `04f7138b`, so the earlier
-revision was replaced rather than advanced. The check therefore compares content:
-`04f7138b` returns the same 21 files with byte-identical sizes to the measured
-copy (17 shards, index, `config.json`, `tokenizer.json`, `tokenizer_config.json`),
-so it carries no weight or config change relative to the measurement.
+`main` is now `2a6059359c685cd0ea66e1e6c34e6803322ff095`, which is what
+`scripts/env.sh` pins. Neither `7cdebca3` nor the previously pinned `04f7138b`
+resolves through the Hub API any more: the repo's history is again a single
+`Initial commit`, now at `2a605935`, so earlier revisions were replaced rather
+than advanced. The check therefore compares content: at `2a605935` the 17 shards
+and the index carry the same LFS sha256 as `scripts/SHA256SUMS`, and
+`config.json`, `tokenizer.json` and `tokenizer_config.json` hash identically, so
+it carries no weight or config change relative to the measurement. The revision
+also holds `README.md`, `LICENSE` and `.gitattributes`, which the manifest does
+not cover.
 `scripts/SHA256SUMS` is the Hub's own LFS sha256 for the 18 LFS files plus
 sha256 of the three small ones.
 

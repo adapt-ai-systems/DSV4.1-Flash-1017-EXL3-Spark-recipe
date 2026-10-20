@@ -8,7 +8,7 @@
 MODEL_REPO="vcruz305/DSV4.1-Flash-1017-SAGE-EXL3-1.62bpw"
 # Revision the recipe was measured on. The Hub's main is pinned here so a
 # download is reproducible; see README "Pack revision" for the check.
-MODEL_REV="04f7138b8ce3c82399eb4900d8bad12e40a0a0da"
+MODEL_REV="2a6059359c685cd0ea66e1e6c34e6803322ff095"
 MODEL_NAME="dsv41-1.62bpw-v3"          # directory name under $MODELS_DIR
 
 # ---- images ---------------------------------------------------------------
