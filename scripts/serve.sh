@@ -132,14 +132,7 @@ sync; sudo -n sh -c 'echo 1 > /proc/sys/vm/drop_caches'
 sleep 3
 
 BASE_SWAP=$(awk '/^SwapTotal:/{t=$2}/^SwapFree:/{f=$2}END{printf "%d", t-f}' /proc/meminfo)
-IDLE_KIB=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
-echo "MemAvailable: $(awk -v k="$IDLE_KIB" 'BEGIN{printf "%.1f", k/1048576}') GiB  swap_base: $BASE_SWAP KiB"
-# The measurement box reads 119.3 GiB here and keeps ~3 GiB once serving at the
-# default 524288. Every GiB less at idle comes straight out of that headroom.
-if [ "$IDLE_KIB" -lt $((118 * 1048576)) ]; then
-  echo "WARNING: idle MemAvailable is under 118 GiB (measurement box: 119.3). Expect about" >&2
-  echo "         $(awk -v k="$IDLE_KIB" 'BEGIN{printf "%.1f", 3.0 - (119.3 - k/1048576)}') GiB at ready instead of ~3 GiB; stop other services or use MAXLEN=32768." >&2
-fi
+echo "MemAvailable: $(awk '/^MemAvailable:/{printf "%.1f", $2/1048576}' /proc/meminfo) GiB  swap_base: $BASE_SWAP KiB"
 
 sudo -n docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 

@@ -120,7 +120,7 @@ once.
 |---|---|
 | Engine reservation (`cuda_alloc` at ready) | 110.5 GiB |
 | Steady-state MemAvailable | ~4.0 GiB at `--max-model-len 32768`, 3.7-3.8 GiB at 229376, 2.9-3.2 GiB at 524288 |
-| Idle MemAvailable before boot (after drop_caches) | 119.3 GiB; `serve.sh` warns under 118 |
+| Idle MemAvailable before boot (after drop_caches) | 116.7-119.3 GiB; every one of these reached 2.9-3.2 GiB at ready, so the idle reading does not predict the steady one |
 | MemAvailable minimum under a 520K-token prefill | 2.23 GiB (0.93 GiB transient; floor 0.5 GiB) |
 | Swap | 0 KiB growth, 0 kills |
 | Cold-expert alias side file | 9,228,943,360 B (8.59 GiB) on disk, mapped read-only |
@@ -321,9 +321,11 @@ re-bench after a warmup request before trusting a slow first boot.
   2.87-3.05 GiB at ready and ~3.0 GiB after smoke and bench, with the engine's
   reservation identical to the measured runs (`cuda_alloc` 107.43 GiB, within
   0.02 GiB at `POST_LOAD`). The recipe's own footprint is the same on both runs, so
-  the tester's 1.6 GiB points at what else that box holds; `serve.sh` now warns when
-  idle MemAvailable (after dropping caches) is under 118 GiB (measurement box: 119.3). The 0.5 GiB guard floor still holds; if your box
-  reads well under 3 GiB at ready, `MAXLEN=32768` buys back about 0.9 GiB.
+  the tester's 1.6 GiB points at what else that box holds. The idle reading before
+  boot does not predict it: boots that started at 116.7, 117.2, 119.2 and 119.3 GiB
+  idle all reached 2.9-3.2 GiB at ready. Check `docker stats` and the host's resident
+  processes while serving. The 0.5 GiB guard floor still holds; if your box reads well
+  under 3 GiB at ready, `MAXLEN=32768` buys back about 0.9 GiB.
 - **`--max-num-batched-tokens 8192` does not fit.** 2112 is the measured value.
 - **Context: 524,288 tokens, not the rated 1M.** Retrieval passed from 32K to 520K (see
   Measured long context); 1M does not fit this box's memory with the guard armed. The
