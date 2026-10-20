@@ -24,7 +24,7 @@ at `--max-model-len 32768` and 3.1-3.2 GiB at the shipped default of 524,288.
 
 | Deployment | Folder | Model | Engine | Status |
 |---|---|---|---|---|
-| 1x Spark, TP1 | `scripts/` | vcruz305/DSV4.1-Flash-1017-SAGE-EXL3-1.62bpw | spark-ds41f r6w + vllm-exl3 + exllamav3 (tile-K 16) + shim, DSpark k=5 | **Measured, serving** |
+| 1x Spark, TP1 | `scripts/` | vcruz305/DSV4.1-Flash-1017-SAGE-EXL3-1.62bpw | spark-ds41f r6w + vllm-exl3 + exllamav3 (tile-K 16, warp-private MoE stages) + shim, DSpark k=5 | **Measured, serving** |
 
 ## Quick start (one Spark)
 
@@ -78,7 +78,7 @@ linears (`docker/tp1_decode_tiles.py`). Nothing else in the base image is replac
 
 | Flag | Why it is there |
 |---|---|
-| `MOE_TILESIZE_K=16` (compile-time) | the served MoE kernel instance: 190.6 -> 142.0 ms/step, i.e. the 32-row tile is ~34 % slower (the `sed` in `docker/Dockerfile` only matters for older `FORK_REF`s; at `42981e6` the header already reads 16 and the build asserts the value) |
+| `MOE_TILESIZE_K=16` (compile-time) | the served MoE kernel instance: 190.6 -> 142.0 ms/step, i.e. the 32-row tile is ~34 % slower (the `sed` in `docker/Dockerfile` only matters for older `FORK_REF`s; at the pinned `909ad85` the header already reads 16 and the build asserts the value) |
 | `--quantization exl3_dsv41` + `--hf-overrides {...}` | EXL3 routed experts with the engine's native block-32 FP8 for every non-routed weight; the override restates it because the DSpark drafter re-derives the config |
 | `--speculative-config dspark k=5` | k=5 is the step/token knee at this step time; k=7 costs +17 ms for +0.55 tok/step |
 | `VLLM_EXL3_MIXEDK_MODE=unified` | one kernel for all K groups instead of one dispatch per group (+9 % mean) |
@@ -147,7 +147,8 @@ run to run, so compare `ms/step` first.
 | + cold-expert ATS alias | 202.8 | 5.02 | 24.2 |
 | + second kernel variant (k4) | 188.8-191.2 | 5.00 | 25.7-27.5 |
 | + tile-K 16 build, k=5 | 140.0-145.6 | 4.35-4.74 | 31.3-34.0 |
-| + TP1 decode tiles for the non-MoE linears (serving) | 141.0-141.8 | 4.14-4.58 | 29.5-32.4 |
+| + TP1 decode tiles for the non-MoE linears | 141.0-141.8 | 4.14-4.58 | 29.5-32.4 |
+| + warp-private MoE pipeline stages (W2), at 524288 (serving) | 133.0-141.0 | 4.55-4.91 | 32.5-38.2 |
 
 The decode-tile row is the mean of two boots alternated with two boots of the row above
 (141.4 vs 144.8 ms/step); its tok/s spread is acceptance, not kernel speed.
@@ -155,16 +156,23 @@ The decode-tile row is the mean of two boots alternated with two boots of the ro
 Tile-K 16 configuration per class, two ship boots: prose 137.6-138.4 ms/step,
 code 143.2-146.2, structured 142.2-144.5.
 
-All rows above were measured at `--max-model-len 32768`. At the default 524288 the
-same configuration runs 147.2 ms/step (see Measured long context).
+The rows above the W2 row were measured at `--max-model-len 32768`; at the default
+524288 that configuration runs 145.9-147.2 ms/step (see Measured long context). The W2
+row was measured at 524288: four boots of recipe-built images, mean 137.4 ms/step (per
+class prose 134.4, code 138.3, structured 139.8). Two of them alternated with two boots
+of the previous build, whose warm boot read 145.9; on the measurement launcher two
+alternating pairs read 136.35 vs 144.2 ms/step (-5.4 %). Outputs are bit-identical to
+the previous kernel (see Quality and correctness). Not counted: one first boot straight
+after an image build that read 190 ms/step (see Keep the disk quiet).
 
-Where the step time goes (nsys, attributed by CUDA graph, 139.4 ms/step): the 40
+Where the step time goes (nsys before the W2 kernel, attributed by CUDA graph, 139.4 ms/step): the 40
 main layers verifying 6 rows take 124.4 ms (89 %), the DSpark drafter 9.2 ms (three
 MTP layers over 5 rows 5.4, draft head 2.8, Markov steps 0.5), verify head and
 sampling 2.9 ms. The MoE dominates the main layers. Its kernel already keeps enough
 bytes in flight to saturate DRAM and is not short of warps (two CTAs per SM measured
-12 % slower); what limits it is a fixed dependent chain per K-slice (barriers plus
-exposed latency). Details in `docs/ENGINEERING_NOTES.md`.
+12 % slower); what limits it is a fixed dependent chain per K-slice. The W2 kernel
+took the CTA-wide barriers out of that chain; what is left is exposed latency on the
+weight reads. Details in `docs/ENGINEERING_NOTES.md`.
 
 ## Measured prefill
 
@@ -215,6 +223,9 @@ Short prompts (bench7, 512 tokens, k=5, warm boot), by `--max-model-len`:
 | 32,768 | 3.9-4.0 GiB | 140.5-142.0 | 4.35-4.67 | 31.3-34.0 |
 | 229,376 | 3.7-3.8 GiB | 145.4 (139.7 / 150.6 / 145.9) | 4.38 | 30.3 |
 | 524,288 | 3.1-3.2 GiB | 147.2 (141.4 / 153.8 / 146.4) | 4.10 | 27.1 |
+| **524,288, W2 kernel (serving)** | 3.12-3.21 GiB | **137.4 (134.4 / 138.3 / 139.8)** | 4.73 | 35.1 |
+
+The first three rows are the previous kernel; the W2 row is the mean of four boots.
 
 The step-time cost of the longer limit is 1-5 %; the tok/s spread is mostly acceptance
 (tok/step moves between runs on the same prompts). Use `MAXLEN=32768` if you never need
@@ -252,6 +263,14 @@ re-bench after a warmup request before trusting a slow first boot.
 
 ## Quality and correctness
 
+- **W2 MoE kernel (warp-private pipeline stages) versus the previous kernel:**
+  bit-identical outputs in all 12 probe cells (rows 1 and 7, both projections, three
+  layers), cold-bench parity rel-L2 5.8e-08, and the same 0.51 ulp against the fp32
+  reference. In model, a teacher-forced comparison against a boot of the previous build
+  (32 positions) read top-1 87.5-96.9 % and max |dlogp| 0.32-1.01; the same comparison
+  between two boots of the previous build read 93.75 % and 0.771. Greedy decode on this
+  engine is not bit-deterministic (atomic adds), so boots of one build differ too; at 32
+  positions one token is 3.1 points of top-1.
 - **Tile-K 16 numerics versus a true fp32 reference:** rel-L2 2.491e-4 (up) /
   2.188e-4 (down) against a 0.50-0.51 fp16 ulp floor, uniform in K and N. The
   build is not one ulp worse than the base kernel anywhere; the base-vs-tile-K
@@ -286,9 +305,13 @@ re-bench after a warmup request before trusting a slow first boot.
   `scripts/build_image.sh` on a fresh clone built the image in 269.6 s (+3.6 GB on
   the base); served through `scripts/serve.sh` with a freshly built alias and the
   Hub file set, it measured 145.5 ms/step, 4.71 tok/step, 31.9 tok/s at
-  `--max-model-len 524288` (bench7), passed `smoke.sh`, answered chat, and found a
-  needle at 131K. Every input of the baked image was also compared against what the
-  measured server mounted:
+  `--max-model-len 524288` (bench7, previous pin `exllamav3@42981e6`), passed
+  `smoke.sh`, answered chat, and found a needle at 131K. The current pin
+  (`exllamav3@909ad85`, W2) was built the same way from a clean clone of this repo and
+  served 135.4 ms/step, 4.91 tok/step, 36.2 tok/s at 524288. Its MoE sources match the
+  measured W2 build file for file except the aarch64 patcher edits (applied at build
+  time), comments and a removed debug print. For the previous pin, every input of the
+  baked image was also compared against what the measured server mounted:
   `plugin-moe-p9b` is byte-identical to `vllm-exl3@30e8b94` (21/21 `.py`),
   `build-tk16` is byte-identical to `exllamav3@42981e6` after the aarch64 patcher
   (14/14 files, including the K=16 header), the shim is identical, and
@@ -329,8 +352,8 @@ re-bench after a warmup request before trusting a slow first boot.
 - **`--max-num-batched-tokens 8192` does not fit.** 2112 is the measured value.
 - **Context: 524,288 tokens, not the rated 1M.** Retrieval passed from 32K to 520K (see
   Measured long context); 1M does not fit this box's memory with the guard armed. The
-  speed tables above were measured at `--max-model-len 32768`; at 524288 short prompts
-  are 1-5 % slower.
+  older speed rows were measured at `--max-model-len 32768`, where short prompts are
+  1-5 % faster than at 524288; the W2 row was measured at 524288.
 
 ## Do not
 
@@ -387,8 +410,8 @@ from-scratch install without them boots, passes `smoke.sh`, answers
   TileKernels, sparknet. The base image is built per
   [justincasey/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark](https://github.com/justincasey/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark)
   `docker/Dockerfile`.
-- Runtime forks pinned here: `vcruz305/exllamav3` (mixed-K unified MoE kernels,
-  aarch64 guards) and `vcruz305/vllm-exl3` (EXL3 quant method, ATS loader).
+- Runtime forks pinned here: `vcruz305/exllamav3` (mixed-K unified MoE kernels
+  with warp-private pipeline stages, aarch64 guards) and `vcruz305/vllm-exl3` (EXL3 quant method, ATS loader).
 - Model: DeepSeek-V4.1-Flash-1017 (MIT), quantized by
   [vcruz305](https://huggingface.co/vcruz305).
 - Recipe scripts: MIT.
