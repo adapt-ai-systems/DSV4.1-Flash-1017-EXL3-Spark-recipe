@@ -16,6 +16,9 @@ DRY_RUN="${DRY_RUN:-0}"
 TS=$(date +%Y%m%d-%H%M%S)
 RUN="${RUN_DIR:-$RUNS_DIR/$TS}"
 JIT="$CACHE_DIR/kkref/jit"
+# The same directory as the container sees it ($CACHE_DIR is mounted at /cache), so
+# the JIT caches persist across boots instead of landing in the container layer.
+CJIT="/cache/kkref/jit"
 
 mkdir -p "$RUN" "$JIT"/{b12x/compile,b12x/cute,cute-dsl,tilelang,triton,nv-compute,vllm-r5o}
 
@@ -93,13 +96,13 @@ sudo -n docker run -d --name "$CONTAINER" \
   -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
   -e B12X_AUTOTUNE=0 -e B12X_BIND_COMPILE_WORKERS=2 -e B12X_STATE_COMPILE_WORKERS=2 \
   -e B12X_WEIGHTS_COMPILE_WORKERS=4 \
-  -e B12X_COMPILE_CACHE_DIR="$JIT/b12x/compile" \
-  -e B12X_CUTE_COMPILE_CACHE_DIR="$JIT/b12x/cute" \
+  -e B12X_COMPILE_CACHE_DIR="$CJIT/b12x/compile" \
+  -e B12X_CUTE_COMPILE_CACHE_DIR="$CJIT/b12x/cute" \
   -e B12X_DENSE_SPLITK_TURBO=1 -e B12X_W4A8_TINY_DECODE=0 \
-  -e CUDA_CACHE_MAXSIZE=4294967296 -e CUDA_CACHE_PATH="$JIT/nv-compute" \
-  -e CUTE_DSL_ARCH=sm_121a -e CUTE_DSL_CACHE_DIR="$JIT/cute-dsl" \
-  -e TILELANG_CACHE_DIR="$JIT/tilelang" -e TRITON_CACHE_DIR="$JIT/triton" \
-  -e XDG_CACHE_HOME="$JIT" -e VLLM_CACHE_ROOT="$JIT/vllm-r5o" \
+  -e CUDA_CACHE_MAXSIZE=4294967296 -e CUDA_CACHE_PATH="$CJIT/nv-compute" \
+  -e CUTE_DSL_ARCH=sm_121a -e CUTE_DSL_CACHE_DIR="$CJIT/cute-dsl" \
+  -e TILELANG_CACHE_DIR="$CJIT/tilelang" -e TRITON_CACHE_DIR="$CJIT/triton" \
+  -e XDG_CACHE_HOME="$CJIT" -e VLLM_CACHE_ROOT="$CJIT/vllm-r5o" \
   -e CUDA_DEVICE_MAX_CONNECTIONS=32 \
   -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
   -e VLLM_DS41_ATTENTION_COMPUTE=auto \
