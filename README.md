@@ -27,6 +27,10 @@ a read-only mapping, which leaves every hot expert resident with ~4 GiB to spare
 
 ## Quick start (one Spark)
 
+Host prerequisites: passwordless `sudo -n docker`, the base engine image (see
+`scripts/build_image.sh`), and `huggingface_hub` with `hf_xet` for the host-side
+download (`python3 -m pip install --user -U 'huggingface_hub[hf_xet]'`).
+
 ```bash
 export HF_TOKEN=hf_...               # account must have accepted the model terms
 bash scripts/download_and_verify.sh  # hf_xet download at the pinned revision + sha256 verify
@@ -235,6 +239,16 @@ re-bench after a warmup request before trusting a slow first boot.
 - **Image build: TODO(confirm).** The measured server bind-mounted the same fork and
   plugin trees (identical file hashes to the pinned commits) into the engine image;
   the baked build in `docker/Dockerfile` has not yet been run end to end.
+- **First boot on a fresh box compiles the TileLang kernels, and the guard can stop
+  it.** A from-scratch install compiled ~360 kernels on its first boot and the guard
+  stopped it at 432 MiB MemAvailable. The kernels persist in `$CACHE_DIR/kkref/jit`
+  (mounted at `/cache`), so run `scripts/serve.sh` again; the second boot reuses them.
+  Every number in this README was measured with a warm kernel cache.
+- **Steady MemAvailable can be lower than measured here.** The same from-scratch
+  install read 1.6 GiB after the smoke test, against 3.1-3.2 GiB measured at
+  `--max-model-len 524288` on the measurement box (4.0 at 32768). The cause is not
+  yet isolated. The 0.5 GiB guard floor still holds; if your box reads well under 3
+  GiB at ready, `MAXLEN=32768` buys back about 0.9 GiB.
 - **`--max-num-batched-tokens 8192` does not fit.** 2112 is the measured value.
 - **Context: 524,288 tokens, not the rated 1M.** Retrieval passed from 32K to 520K (see
   Measured long context); 1M does not fit this box's memory with the guard armed. The
@@ -266,16 +280,18 @@ side file only works because device and host memory are the same pool.
 
 ## Pack revision
 
-Measured against revision `7cdebca3f8a348e423ad293a2ea5cca2297ace1f`. The Hub's
-`main` is now `04f7138b8ce3c82399eb4900d8bad12e40a0a0da`, which is what
-`scripts/env.sh` pins. `7cdebca3` no longer resolves through the Hub API: the
-repo's history is a single `Initial commit` at `04f7138b`, so the earlier
-revision was replaced rather than advanced. The check therefore compares content:
-`04f7138b` returns the same 21 files with byte-identical sizes to the measured
-copy (17 shards, index, `config.json`, `tokenizer.json`, `tokenizer_config.json`),
-so it carries no weight or config change relative to the measurement.
-`scripts/SHA256SUMS` is the Hub's own LFS sha256 for the 18 LFS files plus
-sha256 of the three small ones.
+The numbers were measured on a pack downloaded at revision `7cdebca3`. The Hub
+repo's history has since been replaced twice, each time with a single
+`Initial commit` holding the same files (`04f7138b`, then `2a6059359c68`), so old
+commit ids stop resolving. `scripts/env.sh` pins the current one,
+`2a6059359c685cd0ea66e1e6c34e6803322ff095`, and all 21 files there match
+`scripts/SHA256SUMS` (the Hub's own LFS sha256 for the 17 shards and the index,
+plus sha256 of `config.json`, `tokenizer.json` and `tokenizer_config.json`).
+
+**`scripts/SHA256SUMS` is the authority, not the commit id.** If the pinned
+revision is gone, `download_and_verify.sh` downloads `main` with a warning and
+the sha256 check decides whether it is the measured pack. A mismatch means the
+weights changed; do not serve it as this recipe.
 
 ## Credits and license
 

@@ -15,6 +15,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 : "${HF_TOKEN:?Set HF_TOKEN to a token with access to $MODEL_REPO}"
 
+# Runs on the host, not in the image (the image is built after the download).
+if ! python3 -c "import huggingface_hub, hf_xet" 2>/dev/null; then
+  echo "host python3 lacks huggingface_hub and/or hf_xet. Install them first:" >&2
+  echo "  python3 -m pip install --user -U 'huggingface_hub[hf_xet]'" >&2
+  exit 1
+fi
+
 export HF_XET_HIGH_PERFORMANCE=1
 export HF_HUB_ENABLE_HF_TRANSFER=0   # xet path, not the legacy transfer
 
@@ -26,7 +33,19 @@ import sys
 
 from huggingface_hub import snapshot_download
 
+from huggingface_hub import HfApi
+from huggingface_hub.utils import RevisionNotFoundError
+
 repo, rev, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+api = HfApi(token=os.environ["HF_TOKEN"])
+try:
+    api.model_info(repo, revision=rev)
+except RevisionNotFoundError:
+    main = api.model_info(repo).sha
+    print(f"WARNING: pinned revision {rev[:12]} no longer exists on the Hub "
+          f"(history replaced); downloading main = {main[:12]} instead. "
+          f"scripts/SHA256SUMS decides whether it is the measured pack.")
+    rev = main
 print(f"downloading {repo}@{rev[:12]} -> {dest}")
 snapshot_download(
     repo_id=repo,
