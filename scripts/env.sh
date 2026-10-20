@@ -24,8 +24,8 @@ IMAGE="${IMAGE:-dsv41-1017-exl3:r6w}"
 # Runtime forks baked into the layer above the base, pinned to the commits whose
 # file hashes match the measured server (branches named below).
 FORK_REPO="https://github.com/vcruz305/exllamav3.git"
-FORK_BRANCH="feat/dsv41-1017-tp1-moe"
-FORK_REF="${FORK_REF:-42981e660d18bd893fb1bf732905fafa2a9fe97c}"          # exllamav3: mixed-K unified MoE + aarch64 guards
+FORK_BRANCH="feat/moe-warp-private-stages"
+FORK_REF="${FORK_REF:-909ad8564fcb9e070caca8a65d380c741681e79c}"          # exllamav3: mixed-K unified MoE + aarch64 guards + warp-private MoE pipeline stages
 PLUGIN_REPO="https://github.com/vcruz305/vllm-exl3.git"
 PLUGIN_BRANCH="feat/dsv41-1017-tp1"
 PLUGIN_REF="${PLUGIN_REF:-30e8b941376ce2d43bc8438439937c4809106635}"    # vllm-exl3: Exl3MoEMethod / ATS loader
