@@ -59,9 +59,9 @@ linears (`docker/tp1_decode_tiles.py`). Nothing else in the base image is replac
 | `VLLM_EXL3_ATS_ALIAS=1` + `_LAYERS=38,39` + `_MTP=1` + `_EMBED=1` | ATS aliasing on, with the per-expert manifest in `/alias`. When the manifest lists experts (the cold set does), it decides membership and the layer list is ignored; the values are kept as measured |
 | `--compilation-config cudagraph_mode=FULL_DECODE_ONLY`, sizes 1..7 | decode runs as full CUDA graphs (measured +11-14 % over eager) |
 | TP1 decode tiles (`docker/tp1_decode_tiles.py`, baked into the image) | the base image's decode tile tables are keyed on TP4 shapes; at TP1 `block_K=256` for wo_b / wq_b / shared gate_up / down and a 32x256 tile for WO-A's 16-row bucket: -3.4 ms/step, bitwise-identical outputs |
-| `--max-model-len 229376` | 224K tokens (56 x 4096). Measured: needle retrieval at 225K (depth 0.1 and 0.5), short-prompt decode 145.4 ms/step against 140.5-142.0 at 32K (see Measured long context). The model is rated for 1,048,576 (YaRN x16 over 65,536); longer than 229K has not been measured |
+| `--max-model-len 524288` | 512K tokens, the largest limit measured clean on one Spark: needle retrieval at 520K, minimum MemAvailable 2.23 GiB under that prefill, short-prompt decode 147.2 ms/step against 140.5-142.0 at 32K (see Measured long context). The model is rated for 1,048,576 (YaRN x16 over 65,536); 1M does not fit (the prefill transient grows with prompt length) |
 | `--max-num-batched-tokens 2112 --long-prefill-token-threshold 2047` | the aligned-prefill chunk; 8192 does not fit |
-| `--kv-cache-memory-bytes 1073741824` | 1 GiB KV at the engine's `auto` (bf16) cache dtype. The token count vLLM reports depends on `--max-model-len` for this hybrid attention (sliding-window and compressed groups): 236,089 at 32K, 394,892 at 64K, 595,001 at 128K, 760,070 at 229K (3.31x one full-length request) |
+| `--kv-cache-memory-bytes 1073741824` | 1 GiB KV at the engine's `auto` (bf16) cache dtype. The token count vLLM reports depends on `--max-model-len` for this hybrid attention (sliding-window and compressed groups): 236,089 at 32K, 394,892 at 64K, 595,001 at 128K, 760,070 at 229K, 959,768 at 524K (1.83x one full-length request) |
 | `--no-enable-prefix-caching` | measured off |
 | `B12X_AUTOTUNE=0` | the base image's optional per-kernel autotune sweep is hours; prebuilt artifacts are the measured path |
 | `--security-opt seccomp=unconfined --security-opt label=disable --ulimit memlock=-1` | the Engram reader initialises io_uring; a default seccomp profile aborts it |
@@ -89,11 +89,11 @@ once.
 | Metric | Value |
 |---|---|
 | Engine reservation (`cuda_alloc` at ready) | 110.5 GiB |
-| Steady-state MemAvailable | ~4.0 GiB at `--max-model-len 32768`, 3.7-3.8 GiB at 229376 |
-| MemAvailable minimum under a 225K-token prefill | 2.98 GiB (~0.75 GiB transient; floor 0.5 GiB) |
+| Steady-state MemAvailable | ~4.0 GiB at `--max-model-len 32768`, 3.7-3.8 GiB at 229376, 3.1-3.2 GiB at 524288 |
+| MemAvailable minimum under a 520K-token prefill | 2.23 GiB (0.93 GiB transient; floor 0.5 GiB) |
 | Swap | 0 KiB growth, 0 kills |
 | Cold-expert alias side file | 9,228,943,360 B (8.59 GiB) on disk, mapped read-only |
-| KV pool | 1 GiB (760,070 tokens reported at 229K) |
+| KV pool | 1 GiB (959,768 tokens reported at 524K) |
 
 All-experts-resident does not fit under vLLM on this part: un-aliasing layers
 38 and 39 alone costs 4.6 GiB of transient load pressure and the guard kills the
@@ -158,24 +158,39 @@ halves varied-text prefill (446 vs 718 tok/s at ~7K), so 2112 stays.
 
 ## Measured long context
 
-The shipped setting (`--max-model-len 229376`, 1 GiB KV). One request per row: varied
-log-style filler (unique ids and numbers on every line), a passphrase hidden at the
-given depth, a plain-text question at the end, greedy, 256 generated tokens
-(`bench/ctx_probe.py`). Prefix caching is off, so every row is a full prefill.
+1 GiB KV pool throughout. One request per row: varied log-style filler (unique ids and
+numbers on every line), a passphrase hidden at the given depth, a plain-text question at
+the end, greedy, 256 generated tokens (192 on the two longest rows) (`bench/ctx_probe.py`).
+Prefix caching is off, so every row is a full prefill.
 
-| Prompt tokens | Needle depth | TTFT | Prefill tok/s | Decode tok/s at depth | Retrieved | Min MemAvailable |
-|---:|---:|---:|---:|---:|---|---:|
-| 32,741 | 0.5 | 32.6 s | 1,005 | 31.5 | yes | 3.28 GiB |
-| 131,034 | 0.5 | 111.1 s | 1,179 | 26.5 | yes | 3.13 GiB |
-| 224,983 | 0.5 | 196.1 s | 1,147 | 28.9 | yes | 2.98 GiB |
-| 224,983 | 0.1 | 195.5 s | 1,151 | 31.5 | yes | 3.01 GiB |
+| `--max-model-len` | Prompt tokens | Needle depth | TTFT | Prefill tok/s | Decode tok/s at depth | Retrieved | Min MemAvailable |
+|---:|---:|---:|---:|---:|---:|---|---:|
+| 229,376 | 32,741 | 0.5 | 32.6 s | 1,005 | 31.5 | yes | 3.28 GiB |
+| 229,376 | 131,034 | 0.5 | 111.1 s | 1,179 | 26.5 | yes | 3.13 GiB |
+| 229,376 | 224,983 | 0.5 | 196.1 s | 1,147 | 28.9 | yes | 2.98 GiB |
+| 229,376 | 224,983 | 0.1 | 195.5 s | 1,151 | 31.5 | yes | 3.01 GiB |
+| **524,288 (default)** | 393,176 | 0.1 | 380.6 s | 1,033 | 29.3 | yes | 2.07 GiB |
+| **524,288 (default)** | 519,984 | 0.5 | 516.4 s | 1,007 | 29.3 | yes | 2.23 GiB |
 
-Short prompts on the same server (bench7, 512 tokens, k=5): 145.4 ms/step, 4.38 tok/step,
-30.3 tok/s mean (prose 139.7, code 150.6, structured 145.9 ms/step), against 140.5-142.0
-ms/step at `--max-model-len 32768`. Raising the limit costs ~3 % on short prompts; use
-`MAXLEN=32768` if you never need long prompts. Prefill does not slow with depth on this
-text (1.0-1.2K tok/s from 32K to 225K); it is faster than the stdlib-source ladder above
-because log lines route to fewer experts.
+Short prompts (bench7, 512 tokens, k=5, warm boot), by `--max-model-len`:
+
+| `--max-model-len` | Ready MemAvailable | ms/step mean (prose / code / structured) | tok/step | tok/s |
+|---:|---:|---|---:|---:|
+| 32,768 | 3.9-4.0 GiB | 140.5-142.0 | 4.35-4.67 | 31.3-34.0 |
+| 229,376 | 3.7-3.8 GiB | 145.4 (139.7 / 150.6 / 145.9) | 4.38 | 30.3 |
+| 524,288 | 3.1-3.2 GiB | 147.2 (141.4 / 153.8 / 146.4) | 4.10 | 27.1 |
+
+The step-time cost of the longer limit is 1-5 %; the tok/s spread is mostly acceptance
+(tok/step moves between runs on the same prompts). Use `MAXLEN=32768` if you never need
+long prompts. Prefill does not slow with depth on this text (1.0-1.2K tok/s from 32K to
+520K); it is faster than the stdlib-source ladder above because log lines route to fewer
+experts.
+
+**Why not 1M.** The prefill transient grows with prompt length (about 0.3 GiB at 225K,
+0.4 GiB at 393K, 0.9 GiB at 520K). A `--max-model-len 1048576` server boots (KV 1.25 GiB,
+ready MemAvailable 1.99 GiB, no RoPE-cache trim to give memory back), but a 524K prompt
+on it drove MemAvailable to 0.44 GiB and the guard stopped it. 524,288 is the largest
+limit that passed with margin.
 
 **Keep the disk quiet while serving.** Cold experts are read from NVMe on every step.
 One boot started right after ~10 GB of build output had been written to a 97 %-full
@@ -216,10 +231,10 @@ re-bench after a warmup request before trusting a slow first boot.
   plugin trees (identical file hashes to the pinned commits) into the engine image;
   the baked build in `docker/Dockerfile` has not yet been run end to end.
 - **`--max-num-batched-tokens 8192` does not fit.** 2112 is the measured value.
-- **Context: 229,376 tokens measured, 1M not.** Retrieval passed at 32K, 131K and 225K
-  (see Measured long context). The model is rated for 1,048,576 tokens; beyond 229K
-  needs a larger `KVB` and its own ladder. The speed tables above were measured at
-  `--max-model-len 32768`; at 229376 short prompts are ~3 % slower.
+- **Context: 524,288 tokens, not the rated 1M.** Retrieval passed from 32K to 520K (see
+  Measured long context); 1M does not fit this box's memory with the guard armed. The
+  speed tables above were measured at `--max-model-len 32768`; at 524288 short prompts
+  are 1-5 % slower.
 
 ## Do not
 

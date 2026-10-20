@@ -8,7 +8,7 @@
 set -euo pipefail
 
 MODEL_DIR="${VLLM_EXL3_MODEL_DIR:-/models/dsv41-1.62bpw-v3}"
-MAXLEN="${MAXLEN:-229376}"
+MAXLEN="${MAXLEN:-524288}"
 KVB="${KVB:-1073741824}"
 # The shim trims the RoPE cos/sin cache to the served length at load. Pin the trim to
 # MAXLEN explicitly so it can never fall back to a shorter default than --max-model-len.
