@@ -47,11 +47,14 @@ Resident is 110.5 GiB of 121.7. Everything below was measured, not estimated.
 |---|---|
 | Everything resident | does not fit; un-aliasing layers 38/39 costs 4.6 GiB of transient load pressure and the guard kills the boot |
 | Whole-layer aliasing (layers 38/39 + all MTP experts) | ATS-slow: about 10 % of every aliased layer's experts are touched each step and the GPU reads them through ATS at ~6.6 GB/s; ~130 ms of a ~292 ms step |
-| Cold-expert alias side file (shipped) | 1,380 least-routed experts + embedding, 8.59 GiB, 64-byte aligned; **24.2 tok/s** from 13.5 |
+| Cold-expert alias side file (first set) | 1,380 least-routed experts + embedding, 8.59 GiB, 64-byte aligned; **24.2 tok/s** from 13.5 |
+| Cold set re-selected from a route histogram (shipped) | same 7.36 GiB of expert trellis, 1,355 experts over 43 layers (456 shared with the first set), side file 8.59 GiB. MAXLEN=32768, KVB 256 MiB, same boot recipe: bench7 **130.0-130.7 ms/step** vs 142.2-146.3 with the first set (-8 to -11 %); 6 prompts not in the histogram 130.8-131.1 vs 148.3-149.8 ms/step (-12 %); NVMe reads per bench7 6.3-8.0 GiB vs 17.7-18.2. Needle 8/8. The weights are the same bytes, only their placement changes |
 | MTP experts resident (with 38/39 aliased) | **regression, 9.5 tok/s** (411-847 ms/step): the extra 2.8 GiB leaves 1.2 GiB available, the page cache collapses and the still-aliased layers read even slower |
 | `--max-num-batched-tokens 8192` | does not fit |
 
-The cold set is a routing-frequency selection, not a calibration. Experts the
+The cold set is a routing-frequency selection, not a calibration. The histogram behind the shipped set is `VLLM_EXL3_ROUTE_STATS=1` over bench7 plus six short
+code/prose completions, selected with `tools/ats_build_alias.py --select-npz ... --budget-gib 7.3622 --rows 7`.
+With the first set the page cache churned: ~21 GiB read in and evicted in 263 s, with the hottest cold experts re-read up to ~27x. Experts the
 router rarely picks are the ones whose pages can come from NVMe without hurting
 the step; the membership is `configs/cold-alias-selection.json`.
 
