@@ -19,6 +19,10 @@
 ARG BASE_IMAGE=dsv41-1017-ds41f:r6w
 FROM ${BASE_IMAGE}
 
+# Re-declared inside the stage: an ARG before FROM is not visible to RUN/LABEL,
+# and buildkit warns "UndefinedVar: $BASE_IMAGE" without it.
+ARG BASE_IMAGE
+
 ARG PLUGIN_REPO=https://github.com/vcruz305/vllm-exl3.git
 ARG PLUGIN_REF=30e8b941376ce2d43bc8438439937c4809106635
 ARG FORK_REPO=https://github.com/vcruz305/exllamav3.git

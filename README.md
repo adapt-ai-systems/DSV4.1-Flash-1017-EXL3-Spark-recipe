@@ -38,7 +38,15 @@ read cold experts from, and keep it well short of full (see "Keep the disk quiet
 
 Host prerequisites: passwordless `sudo -n docker`, the base engine image (see
 `scripts/build_image.sh`), and `huggingface_hub` with `hf_xet` for the host-side
-download (`python3 -m pip install --user -U 'huggingface_hub[hf_xet]'`).
+download. On a stock Ubuntu 24.04 the documented install needs
+`--break-system-packages` (PEP 668 marks the system python externally managed):
+
+```bash
+python3 -m pip install --user --break-system-packages -U 'huggingface_hub[hf_xet]'
+```
+
+(`numpy` is only needed for the optional `--select-npz` route-histogram path in
+`tools/ats_build_alias.py`; the shipped `--experts-json` path is stdlib-only.)
 
 ```bash
 export HF_TOKEN=hf_...               # account must have accepted the model terms
@@ -104,7 +112,8 @@ once.
 | Metric | Value |
 |---|---|
 | Engine reservation (`cuda_alloc` at ready) | 110.5 GiB |
-| Steady-state MemAvailable | ~4.0 GiB at `--max-model-len 32768`, 3.7-3.8 GiB at 229376, 3.1-3.2 GiB at 524288 |
+| Steady-state MemAvailable | ~4.0 GiB at `--max-model-len 32768`, 3.7-3.8 GiB at 229376, 2.9-3.2 GiB at 524288 |
+| Idle MemAvailable before boot (after drop_caches) | 119.3 GiB; `serve.sh` warns under 118 |
 | MemAvailable minimum under a 520K-token prefill | 2.23 GiB (0.93 GiB transient; floor 0.5 GiB) |
 | Swap | 0 KiB growth, 0 kills |
 | Cold-expert alias side file | 9,228,943,360 B (8.59 GiB) on disk, mapped read-only |
@@ -243,33 +252,57 @@ re-bench after a warmup request before trusting a slow first boot.
   ~48 tok/s needs ~42 ms out of a 140 ms step (~50 tok/s needs ~45 ms); the
   ranked candidates and the arithmetic are in `docs/ENGINEERING_NOTES.md`.
 - **Vision is not enabled** (`--language-model-only`); no image path was measured.
-- **Chat endpoint: no chat template ships in the pack.** The Hub revision has no
-  `chat_template.jinja` and neither `tokenizer_config.json` nor `tokenizer.json`
-  carries a `chat_template` field. `--tokenizer-mode deepseek_v41` does not need
-  one: `vllm/tokenizers/deepseek_v41.py` overrides `apply_chat_template` and
-  encodes the conversation in code. This is read from the engine source, not from a
-  served request -- all speed figures here are plain `/v1/completions`. If you point
-  the server at a different tokenizer mode, supply a template or chat will 400.
-- **Image build: verified by hash, not by a second clean box.** Every input of the
-  baked image was compared against what the measured server mounted:
+- **Chat endpoint: no chat template ships in the pack, and none is needed.** The
+  Hub revision has no `chat_template.jinja` and neither `tokenizer_config.json`
+  nor `tokenizer.json` carries a `chat_template` field. `--tokenizer-mode
+  deepseek_v41` does not need one: `vllm/tokenizers/deepseek_v41.py` overrides
+  `apply_chat_template` and encodes the conversation in code. Measured on a
+  from-scratch install without either file: one user message ("What is the
+  capital of France?", `max_tokens 32`) returns HTTP 200,
+  `finish_reason=stop`, `The capital of France is **Paris**.` If you point the
+  server at a different tokenizer mode, supply a template or chat will 400.
+- **Image build: built and served from scratch on the measurement box.**
+  `scripts/build_image.sh` on a fresh clone built the image in 269.6 s (+3.6 GB on
+  the base); served through `scripts/serve.sh` with a freshly built alias and the
+  Hub file set, it measured 145.5 ms/step, 4.71 tok/step, 31.9 tok/s at
+  `--max-model-len 524288` (bench7), passed `smoke.sh`, answered chat, and found a
+  needle at 131K. Every input of the baked image was also compared against what the
+  measured server mounted:
   `plugin-moe-p9b` is byte-identical to `vllm-exl3@30e8b94` (21/21 `.py`),
   `build-tk16` is byte-identical to `exllamav3@42981e6` after the aarch64 patcher
   (14/14 files, including the K=16 header), the shim is identical, and
   `docker/tp1_decode_tiles.py` applied to the base image's `gemm.py`/`wo.py`
   reproduces `overlay-p12` exactly (comment-only diff). The compiled plugin
   extension is unchanged between the measured image's `2a740a3` and `30e8b94`
-  (`git diff --stat 2a740a3 30e8b94 -- csrc setup.py` is empty). What is *not*
-  covered: a build on a machine other than this one, and any base-image drift.
+  (`git diff --stat 2a740a3 30e8b94 -- csrc setup.py` is empty). Not covered: the
+  base image built on another machine (base-image drift).
 - **First boot on a fresh box compiles the TileLang kernels, and the guard can stop
-  it.** A from-scratch install compiled ~360 kernels on its first boot and the guard
-  stopped it at 432 MiB MemAvailable. The kernels persist in `$CACHE_DIR/kkref/jit`
-  (mounted at `/cache`), so run `scripts/serve.sh` again; the second boot reuses them.
-  Every number in this README was measured with a warm kernel cache.
+  it.** A from-scratch install on a tester's Spark was stopped by the guard at 432 MiB
+  MemAvailable during this compile. Replayed from scratch on the measurement box
+  (fresh clone, image, alias and an empty cache), the first boot compiled 156 kernels
+  (1,817 files, 72 MB in `$CACHE_DIR/kkref/jit`). The compile fan-out is the cause: up to 25 concurrent
+  nvcc/cicc/cc1plus/ptxas processes at 20-390 MB each, ~2.5 GB on top of the
+  engine, at a point where the model reservation is already 107.4 GiB.
+  Measured on one box, same image and pack: cold cache with the stock worker
+  counts **min 1.43 GiB**; cold cache with `B12X_*_COMPILE_WORKERS=1` and
+  `TVM_NUM_THREADS=1` / `TVM_BIND_THREADS=1` **min 2.67 GiB**, ready 302 s vs 305 s.
+  `scripts/serve.sh` applies those overrides automatically while the JIT cache is
+  cold, i.e. until a boot has reached ready once and left `$CACHE_DIR/kkref/jit/.warm`
+  (a boot killed half-way leaves no marker, so the next one is serialised again).
+  That first boot serves normally, but the speed figures were measured with the
+  stock worker settings: run `scripts/serve.sh` once more after it is ready. The
+  kernels persist in `$CACHE_DIR/kkref/jit` (mounted at `/cache`) and later boots
+  compile nothing. Every number in this README was measured with a warm cache.
 - **Steady MemAvailable can be lower than measured here.** The same from-scratch
   install read 1.6 GiB after the smoke test, against 3.1-3.2 GiB measured at
-  `--max-model-len 524288` on the measurement box (4.0 at 32768). The cause is not
-  yet isolated. The 0.5 GiB guard floor still holds; if your box reads well under 3
-  GiB at ready, `MAXLEN=32768` buys back about 0.9 GiB.
+  `--max-model-len 524288` on the measurement box (4.0 at 32768). The from-scratch
+  replay on the measurement box (fresh image, alias and cache, Hub file set) read
+  2.87-3.05 GiB at ready and ~3.0 GiB after smoke and bench, with the engine's
+  reservation identical to the measured runs (`cuda_alloc` 107.43 GiB, within
+  0.02 GiB at `POST_LOAD`). The recipe's own footprint is the same on both runs, so
+  the tester's 1.6 GiB points at what else that box holds; `serve.sh` now warns when
+  idle MemAvailable (after dropping caches) is under 118 GiB (measurement box: 119.3). The 0.5 GiB guard floor still holds; if your box
+  reads well under 3 GiB at ready, `MAXLEN=32768` buys back about 0.9 GiB.
 - **`--max-num-batched-tokens 8192` does not fit.** 2112 is the measured value.
 - **Context: 524,288 tokens, not the rated 1M.** Retrieval passed from 32K to 520K (see
   Measured long context); 1M does not fit this box's memory with the guard armed. The
@@ -315,6 +348,14 @@ three (`.gitattributes`, `LICENSE`, `README.md`) are not used at serve time.
 revision is gone, `download_and_verify.sh` downloads `main` with a warning and
 the sha256 check decides whether it is the measured pack. A mismatch means the
 weights changed; do not serve it as this recipe.
+
+The Hub revision does not ship `engram_token_map.u32` (517,120 B) or
+`chat_template.jinja` (4,015 B), both of which exist in the measurement box's
+copy of the pack. Neither is in `SHA256SUMS` and neither is required: a
+from-scratch install without them boots, passes `smoke.sh`, answers
+`/v1/chat/completions` and retrieves a needle at 131K, with the same
+`cuda_alloc` (107.43 GiB) and `AnonPages` (2.96 GiB) as the measurement box at
+`POST_LOAD`.
 
 ## Credits and license
 
