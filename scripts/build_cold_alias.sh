@@ -3,12 +3,12 @@
 #
 #   bash scripts/build_cold_alias.sh
 #
-# Writes $ALIAS_DIR/experts.bin (9,225,994,240 bytes: embed.weight + 1,355
+# Writes $ALIAS_DIR/experts.bin (9,228,943,360 bytes: embed.weight + 1,418
 # coldest experts x w1/w2/w3, every tensor 64-byte aligned) and
 # $ALIAS_DIR/manifest.json. Read-only on the pack; the side file costs disk, not
 # GPU memory, and is mapped on demand.
 #
-# The measured member list is configs/cold-alias-selection.json (43 layers, 1,355
+# The measured member list is configs/cold-alias-selection.json (43 layers, 1,418
 # experts). It is a routing-frequency selection, not calibration data: experts the
 # router picks least often are the ones whose pages can be paged in from NVMe
 # instead of held resident, which is what makes the rest of the pack fit.
@@ -30,7 +30,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$ALIAS_DIR"
 
-need_kib=$(( 9225994240 / 1024 + 1024 * 1024 ))   # side file + 1 GiB slack
+need_kib=$(( 9228943360 / 1024 + 1024 * 1024 ))   # side file + 1 GiB slack
 avail_kib=$(df -k --output=avail "$ALIAS_DIR" | tail -1 | tr -dc '0-9')
 if [ "${avail_kib:-0}" -lt "$need_kib" ]; then
   echo "not enough space for the 8.6 GiB alias side file on $ALIAS_DIR" >&2
@@ -47,5 +47,5 @@ python3 "$RECIPE_HOME/tools/ats_build_alias.py" \
 echo
 echo "alias dir: $ALIAS_DIR"
 ls -la "$ALIAS_DIR"
-echo "expected experts.bin size: 9225994240 bytes"
+echo "expected experts.bin size: 9228943360 bytes"
 echo "point serve.sh at it with ALIAS_DIR=$ALIAS_DIR (the default)"
