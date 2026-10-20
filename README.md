@@ -17,7 +17,8 @@ streamed from NVMe; everything else is meant to be device-resident. Under vLLM
 on one Spark that does not quite fit, so this recipe serves it with a
 **cold-expert alias side file**: the 1,380 least-routed experts plus the
 embedding are gathered into one 64-byte-aligned file that the GPU reads through
-a read-only mapping, which leaves every hot expert resident with ~4 GiB to spare.
+a read-only mapping, which leaves every hot expert resident with ~4 GiB to spare
+at `--max-model-len 32768` and 3.1-3.2 GiB at the shipped default of 524,288.
 
 ## Status
 
@@ -26,6 +27,14 @@ a read-only mapping, which leaves every hot expert resident with ~4 GiB to spare
 | 1x Spark, TP1 | `scripts/` | vcruz305/DSV4.1-Flash-1017-SAGE-EXL3-1.62bpw | spark-ds41f r6w + vllm-exl3 + exllamav3 (tile-K 16) + shim, DSpark k=5 | **Measured, serving** |
 
 ## Quick start (one Spark)
+
+Disk, measured on the measurement box: the pack is **326.6 GB** (304 GiB; two
+shards are ~101.5 GB each), the alias side file **8.6 GiB**, the base engine image
+**34.9 GB**, and the derived image adds **~2 GB** on top of it (36.9 GB as listed by
+`docker images`, shared layers). The first boot adds a few GB of JIT cache under
+`~/.cache/dsv41-ds41f/kkref/jit`. Budget **~400 GB free** on the NVMe the serve will
+read cold experts from, and keep it well short of full (see "Keep the disk quiet").
+`download_and_verify.sh` and `build_cold_alias.sh` check free space before writing.
 
 Host prerequisites: passwordless `sudo -n docker`, the base engine image (see
 `scripts/build_image.sh`), and `huggingface_hub` with `hf_xet` for the host-side
@@ -54,7 +63,7 @@ linears (`docker/tp1_decode_tiles.py`). Nothing else in the base image is replac
 
 | Flag | Why it is there |
 |---|---|
-| `MOE_TILESIZE_K=16` (compile-time) | the served MoE kernel instance; 32 (upstream) is 25 % slower per step |
+| `MOE_TILESIZE_K=16` (compile-time) | the served MoE kernel instance: 190.6 -> 142.0 ms/step, i.e. the 32-row tile is ~34 % slower (the `sed` in `docker/Dockerfile` only matters for older `FORK_REF`s; at `42981e6` the header already reads 16 and the build asserts the value) |
 | `--quantization exl3_dsv41` + `--hf-overrides {...}` | EXL3 routed experts with the engine's native block-32 FP8 for every non-routed weight; the override restates it because the DSpark drafter re-derives the config |
 | `--speculative-config dspark k=5` | k=5 is the step/token knee at this step time; k=7 costs +17 ms for +0.55 tok/step |
 | `VLLM_EXL3_MIXEDK_MODE=unified` | one kernel for all K groups instead of one dispatch per group (+9 % mean) |
@@ -84,6 +93,8 @@ Host side, while serving: `vm.compaction_proactiveness=0`,
 | Graph capture | ~1 s |
 | **API ready (container start to `/v1/models` 200)** | **3 min 11 s** |
 
+The three stages above are not the whole 3 min 11 s: ~58 s goes to process start,
+tokenizer/index load and engine construction before the first shard is read.
 Re-boots are faster once the JIT caches under `~/.cache/dsv41-ds41f/kkref/jit`
 are warm; the first boot after an image build pays the TileLang/B12X compile
 once.
@@ -216,7 +227,7 @@ re-bench after a warmup request before trusting a slow first boot.
   build is not one ulp worse than the base kernel anywhere; the base-vs-tile-K
   delta is two independent realizations of the same 0.5-ulp C-buffer rounding.
 - **Teacher-forced logprob checks** on every shipped arm (32 positions, full
-  vocabulary): top-1 agreement 78-97 % against the non-speculative reference
+  vocabulary): top-1 agreement 78.1-93.8 % against the non-speculative reference
   depending on the arm, max |dlogprob| inside that session's own noise floor.
   The gate exists to catch a wrong kernel, not to score quality.
 - **Greedy output is not bit-deterministic** on this engine: batched atomics in
@@ -228,17 +239,27 @@ re-bench after a warmup request before trusting a slow first boot.
 ## Known limits
 
 - **50-60 tok/s is not reached.** 31-34 tok/s is the best measured so far;
-  kernel work continues on the fork branch. Getting to ~46 tok/s needs ~42 ms out of a 140 ms step; the
+  kernel work continues on the fork branch. At the measured 4.7 accepted tokens/step,
+  ~48 tok/s needs ~42 ms out of a 140 ms step (~50 tok/s needs ~45 ms); the
   ranked candidates and the arithmetic are in `docs/ENGINEERING_NOTES.md`.
 - **Vision is not enabled** (`--language-model-only`); no image path was measured.
-- **Chat endpoint on a fresh download: TODO(confirm).** The measured pack
-  directory also held a `chat_template.jinja` carried over from an earlier upload
-  of this pack; the current Hub revision does not ship one. All speed figures use
-  plain `/v1/completions`; `/v1/chat/completions` against a fresh download has not
-  been checked.
-- **Image build: TODO(confirm).** The measured server bind-mounted the same fork and
-  plugin trees (identical file hashes to the pinned commits) into the engine image;
-  the baked build in `docker/Dockerfile` has not yet been run end to end.
+- **Chat endpoint: no chat template ships in the pack.** The Hub revision has no
+  `chat_template.jinja` and neither `tokenizer_config.json` nor `tokenizer.json`
+  carries a `chat_template` field. `--tokenizer-mode deepseek_v41` does not need
+  one: `vllm/tokenizers/deepseek_v41.py` overrides `apply_chat_template` and
+  encodes the conversation in code. This is read from the engine source, not from a
+  served request -- all speed figures here are plain `/v1/completions`. If you point
+  the server at a different tokenizer mode, supply a template or chat will 400.
+- **Image build: verified by hash, not by a second clean box.** Every input of the
+  baked image was compared against what the measured server mounted:
+  `plugin-moe-p9b` is byte-identical to `vllm-exl3@30e8b94` (21/21 `.py`),
+  `build-tk16` is byte-identical to `exllamav3@42981e6` after the aarch64 patcher
+  (14/14 files, including the K=16 header), the shim is identical, and
+  `docker/tp1_decode_tiles.py` applied to the base image's `gemm.py`/`wo.py`
+  reproduces `overlay-p12` exactly (comment-only diff). The compiled plugin
+  extension is unchanged between the measured image's `2a740a3` and `30e8b94`
+  (`git diff --stat 2a740a3 30e8b94 -- csrc setup.py` is empty). What is *not*
+  covered: a build on a machine other than this one, and any base-image drift.
 - **First boot on a fresh box compiles the TileLang kernels, and the guard can stop
   it.** A from-scratch install compiled ~360 kernels on its first boot and the guard
   stopped it at 432 MiB MemAvailable. The kernels persist in `$CACHE_DIR/kkref/jit`
@@ -261,8 +282,8 @@ re-bench after a warmup request before trusting a slow first boot.
 - Do not drop the cold-expert alias (`VLLM_EXL3_ATS_ALIAS=0`) and expect a boot:
   the pack does not fit resident.
 - Do not raise `--max-num-batched-tokens` to 8192 without re-measuring; it OOMs.
-- Do not build the fork without `MOE_TILESIZE_K=16`; you get the 25 %-slower
-  kernel and none of these numbers apply.
+- Do not build the fork without `MOE_TILESIZE_K=16`; you get the 32-row tile,
+  ~34 % slower per step (190.6 vs 142.0 ms), and none of these numbers apply.
 - Do not enable prefix caching (measured off) or `B12X_AUTOTUNE` (hours of
   bring-up) as a "helpful" default.
 - Do not run the container without `seccomp=unconfined`; io_uring init fails.
@@ -275,7 +296,8 @@ re-bench after a warmup request before trusting a slow first boot.
 | NVIDIA DGX Spark (GB10) | 128 GB unified | Measured (this recipe) |
 
 Nothing else has been verified. The recipe needs ~110.5 GiB of device
-reservation plus ~4 GiB of headroom, and depends on unified memory: the alias
+reservation plus 3.1-4.0 GiB of headroom depending on `--max-model-len`, and
+depends on unified memory: the alias
 side file only works because device and host memory are the same pool.
 
 ## Pack revision
@@ -284,9 +306,10 @@ The numbers were measured on a pack downloaded at revision `7cdebca3`. The Hub
 repo's history has since been replaced twice, each time with a single
 `Initial commit` holding the same files (`04f7138b`, then `2a6059359c68`), so old
 commit ids stop resolving. `scripts/env.sh` pins the current one,
-`2a6059359c685cd0ea66e1e6c34e6803322ff095`, and all 21 files there match
-`scripts/SHA256SUMS` (the Hub's own LFS sha256 for the 17 shards and the index,
-plus sha256 of `config.json`, `tokenizer.json` and `tokenizer_config.json`).
+`2a6059359c685cd0ea66e1e6c34e6803322ff095`; the Hub revision has 24 files and the
+21 this recipe needs all match `scripts/SHA256SUMS` (sha256 of the 17 shards, the
+index, `config.json`, `tokenizer.json` and `tokenizer_config.json`). The other
+three (`.gitattributes`, `LICENSE`, `README.md`) are not used at serve time.
 
 **`scripts/SHA256SUMS` is the authority, not the commit id.** If the pinned
 revision is gone, `download_and_verify.sh` downloads `main` with a warning and

@@ -30,7 +30,14 @@ second order.
   plus `label=disable` and `memlock=-1` are requirements, not tuning.
 - **Aligned prefill chunks need `--long-prefill-token-threshold 2047`.**
 - **`max_position_embeddings` is 1M**, so the two shared RoPE caches are 256 MiB
-  each in fp32. Trimming them to `max_model_len` frees 0.484 GiB at boot.
+  each in fp32. Trimming them to `max_model_len` frees 0.484 GiB at boot
+  (`ROPE TRIM ... rows` in the log is the receipt; 0.250 GiB at 524,288).
+- **`VLLM_EXL3_TRIM_AFTER_LAYER=1` is inert at this pin.** The per-layer
+  `malloc_trim`/`empty_cache` hook lives in `patch_trim.py`, which patches
+  `vllm_exl3/exl3.py` *inside the image*; the measured server bind-mounted
+  `plugin-moe-p9b` over that directory, so the hook was shadowed and never ran.
+  `serve.sh` still passes the variable (it is harmless), but do not attribute any
+  memory number to it. Bake `patch_trim.py` or drop the variable.
 
 ## 2. Memory: what stays resident
 
@@ -54,8 +61,9 @@ the step; the membership is `configs/cold-alias-selection.json`.
   step -29 %. One launch per layer covers every K group instead of one dispatch
   per K group, which also removes most of the routing glue launches.
 - **Tile-K 16 (`MOE_TILESIZE_K`) is the single biggest kernel win: 190 → 142
-  ms/step, -25 %.** It is a compile-time constant, which is why the image build
-  rewrites the header.
+  ms/step, -25 %.** It is a compile-time `#define`. At the pinned fork commit the
+  header already reads 16; the image build rewrites it to `MOE_TILESIZE_K` anyway and
+  fails if the result is not that value, so the build argument cannot be ignored.
 - **`__launch_bounds__(256, 2)` cannot give 2 CTAs/SM on this part.** GB10
   exposes 100 KiB of shared memory per SM, and the launcher always requests
   90 KiB as dynamic smem, whatever instance it picked. Two CTAs need 186 KiB.

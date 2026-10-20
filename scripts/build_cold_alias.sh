@@ -28,6 +28,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$ALIAS_DIR"
 
+need_kib=$(( 9228943360 / 1024 + 1024 * 1024 ))   # side file + 1 GiB slack
+avail_kib=$(df -k --output=avail "$ALIAS_DIR" | tail -1 | tr -dc '0-9')
+if [ "${avail_kib:-0}" -lt "$need_kib" ]; then
+  echo "not enough space for the 8.6 GiB alias side file on $ALIAS_DIR" >&2
+  exit 1
+fi
+
 python3 "$RECIPE_HOME/tools/ats_build_alias.py" \
   --model-dir "$MODEL_DIR" \
   --out "$ALIAS_DIR" \
