@@ -124,11 +124,16 @@ The decode-tile row is the mean of two boots alternated with two boots of the ro
 Tile-K 16 configuration per class, two ship boots: prose 137.6-138.4 ms/step,
 code 143.2-146.2, structured 142.2-144.5.
 
-Where the step time goes at tile-K 16 (nsys, 974 decode steps, 2,657 kernels/step):
-MoE 84.0 ms (58 %), non-MoE linears 36.6 ms, elementwise glue 8.5 ms, head
-5.7 ms, draft MoE 6.1 ms. The MoE kernel runs at 1 CTA/SM, 8 warps/SM and 47.6 %
-of DRAM peak; it is bound by instruction issue in the trellis decode (about four
-integer instructions per weight), not by memory bandwidth.
+All rows above were measured at `--max-model-len 32768`. At the default 524288 the
+same configuration runs 147.2 ms/step (see Measured long context).
+
+Where the step time goes (nsys, attributed by CUDA graph, 139.4 ms/step): the 40
+main layers verifying 6 rows take 124.4 ms (89 %), the DSpark drafter 9.2 ms (three
+MTP layers over 5 rows 5.4, draft head 2.8, Markov steps 0.5), verify head and
+sampling 2.9 ms. The MoE dominates the main layers. Its kernel already keeps enough
+bytes in flight to saturate DRAM and is not short of warps (two CTAs per SM measured
+12 % slower); what limits it is a fixed dependent chain per K-slice (barriers plus
+exposed latency). Details in `docs/ENGINEERING_NOTES.md`.
 
 ## Measured prefill
 
