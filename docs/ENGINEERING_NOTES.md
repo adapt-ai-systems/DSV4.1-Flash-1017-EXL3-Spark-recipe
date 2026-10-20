@@ -77,8 +77,24 @@ the step; the membership is `configs/cold-alias-selection.json`.
   not short of warps.
 - **Removing one of the four `bar.sync` per K-slice: -3.9 % cold, about -3.8
   ms/step in model** (2.646 -> 2.543 ms/layer; 145.4/141.3 -> 140.0/139.1 ms/step
-  over two alternating pairs), bit-exact. Not shipped yet: its teacher-forced
-  gate was one better and one worse than the baseline's across the two pairs.
+  over two alternating pairs), bit-exact. The slot read at iteration k is the slot
+  written at iteration k-3, so one barrier covers both hazards. Shipped as part of W2.
+- **W2, warp-private pipeline stages: -7.1 % cold vs that, -5.4 % in model, bit-exact
+  (shipped).** Each warp copies the A tile and the B fragments it later reads into its
+  own slot of the stage ring, so `cp.async.wait_group` + `__syncwarp()` order every
+  shared-memory read and the CTA-wide pipeline barriers leave the slice loop (6
+  barriers per loop body instead of 9). 47,104 B of shared memory per CTA instead of
+  29,184, still one CTA per SM; one size formula feeds the launcher, the accessors and
+  the kernel's static_assert. L2-cold at 7 rows 2.554 -> 2.372 ms/layer; in model at
+  524288 136.35 vs 144.2 ms/step over two alternating pairs (measurement launcher) and
+  133.0-141.0 vs 145.9 through the recipe. Outputs bit-identical in all 12 probe cells,
+  parity rel-L2 5.8e-08. The first version measured -7.7 % cold and was wrong (rel-L2
+  1.2-1.3): the code advancing each warp's A pointer between stages dropped the per-warp
+  offset that the setup code applied, so every warp read warp 0's tile with no barrier
+  left to make sharing safe. A CPU emulation of every shared-memory write and read across
+  the seven dispatched instances found it, and proves the fixed version reads exactly the
+  bytes the old kernel reads, each written by the reading warp's own lanes. A speedup
+  measured on wrong output is not a speedup; take parity before timing.
 - **The kernel already keeps enough bytes in flight.** About 188 KiB is in flight
   across the chip, against ~186 KiB needed to saturate DRAM at ~700 ns latency
   (Little's law). The same model predicts the measured speed at 3 smem stages,
@@ -135,25 +151,29 @@ the step; the membership is `configs/cold-alias-selection.json`.
 
 ## 5. Where it stands
 
-About 140-147 ms/step (140.5-142.0 at `--max-model-len 32768`, 147.2 at the
-default 524288), 4.1-4.8 accepted tokens/step, 27-35 tok/s. Per-step attribution
+With W2: 133-141 ms/step at the default 524288 (mean 137.4 over four boots),
+4.6-4.9 accepted tokens/step, 32-38 tok/s. Before it: 140.5-142.0 at
+`--max-model-len 32768`, 145.9-147.2 at 524288. The attribution below predates W2. Per-step attribution
 by CUDA graph (139.4 ms): 40 main layers verifying 6 rows 124.4 ms (89 %), verify
 head and sampling 2.9 ms, drafter 9.2 ms, glue 0.5 ms. Inside the main layers the
 MoE is the dominant cost; the shared expert runs on a second stream and is
 mostly hidden, so earlier anatomies that added it to the critical path
 over-counted it.
 
-Reaching 50 tok/s needs about 95 ms/step at ~4.7 tokens/step, i.e. about 45 ms
+Reaching 50 tok/s needs about 95 ms/step at ~4.7 tokens/step, i.e. about 42 ms
 out of the step. What is left, by evidence:
 
-1. **The MoE kernel's per-slice dependent chain.** Not bandwidth in flight, not
-   warps, not decode instructions (all measured above). The open variants
-   shorten the chain: fewer CTA-wide barriers through a column-private
-   reduction and per-warp ownership of the weight stages, and a run-ahead L2
-   prefetch of the next slices.
-2. **The drafter** (up to -2.5 ms): a draft head restricted to part of the
-   vocabulary. Emitted text is unchanged under greedy verify; acceptance may
-   move.
+1. **The MoE kernel's per-slice dependent chain, now mostly spent.** Not bandwidth
+   in flight, not warps, not decode instructions (all measured above). W2 removed
+   the CTA-wide pipeline barriers; the other chain-shortening variants (an extra
+   stage, more loads in flight, an earlier prefetch, each alone and combined) were
+   bit-exact and within +/-2 % cold, so they are not shipped. What remains is
+   exposed latency on the weight reads, about 116 GB/s achieved against ~270.
+2. **The drafter** (9.2 ms of the step). Measured: three MTP layers cut to two is
+   no faster (136.9/138.1 vs 136.35 ms/step) and accepts fewer tokens (4.51 vs 4.63
+   per step); `VLLM_EXL3_RECONSTRUCT_MIN_ROWS=3` (dense reconstruction at 3+ rows)
+   is 27 % slower. Open: a draft head restricted to part of the vocabulary (modelled
+   -2.5 ms; emitted text unchanged under greedy verify, acceptance may move).
 3. **The non-MoE FP8 linears are near the memory roof** (wo_b moves 42 MB in
    0.207 ms, ~200 GB/s, after the TP1 tiles). Only fewer bytes would move them.
 
