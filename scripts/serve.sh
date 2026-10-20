@@ -22,6 +22,9 @@ RUN="${RUN_DIR:-$RUNS_DIR/$TS}"
 JIT_HOST="$CACHE_DIR/kkref/jit"
 JIT="/cache/kkref/jit"
 
+PCF=--no-enable-prefix-caching
+[ "$PREFIX_CACHING" = "1" ] && PCF=--enable-prefix-caching
+
 if [ "$DRY_RUN" = "1" ]; then
   echo "DRY_RUN=1: would launch container=$CONTAINER image=$IMAGE"
   echo "  model  : $MODEL_DIR -> /models/$MODEL_NAME"
@@ -46,7 +49,7 @@ if [ "$DRY_RUN" = "1" ]; then
   echo
   echo "vllm serve /models/$MODEL_NAME --served-model-name dsv41 --tokenizer-mode deepseek_v41 \\"
   echo "  --dtype bfloat16 --tensor-parallel-size 1 --distributed-executor-backend uni \\"
-  echo "  --quantization exl3_dsv41 --block-size 256 --no-enable-prefix-caching --enable-chunked-prefill \\"
+  echo "  --quantization exl3_dsv41 --block-size 256 $PCF --enable-chunked-prefill \\"
   echo "  --max-model-len $MAXLEN --max-num-seqs 1 --max-parallel-prefills 1 \\"
   echo "  --max-num-batched-tokens $MNBT --gpu-memory-utilization $GPU_MEM_UTIL \\"
   echo "  --kv-cache-memory-bytes $KVB --generation-config vllm --attention-backend tilelang \\"
@@ -155,7 +158,7 @@ sudo -n docker run -d --name "$CONTAINER" \
   -e VLLM_EXL3_MEM_WATERFALL=0 \
   -e VLLM_EXL3_MEM_WATERFALL_PATH= \
   -e MAXLEN="$MAXLEN" -e KVB="$KVB" -e MNBT="$MNBT" -e LPT="$LPT" \
-  -e MTP_K="$MTP_K" -e CAPTURE_SIZES="$CAPTURE_SIZES" -e CG_MODE="$CG_MODE" \
+  -e PREFIX_CACHING="$PREFIX_CACHING" -e MTP_K="$MTP_K" -e CAPTURE_SIZES="$CAPTURE_SIZES" -e CG_MODE="$CG_MODE" \
   -e GPU_MEM_UTIL="$GPU_MEM_UTIL" \
   --entrypoint /bin/bash \
   "$IMAGE" /root/serve.sh \

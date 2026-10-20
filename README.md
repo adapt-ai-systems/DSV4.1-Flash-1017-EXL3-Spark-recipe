@@ -75,7 +75,7 @@ linears (`docker/tp1_decode_tiles.py`). Nothing else in the base image is replac
 | `--max-model-len 524288` | 512K tokens, the largest limit measured clean on one Spark: needle retrieval at 520K, minimum MemAvailable 2.23 GiB under that prefill, short-prompt decode 147.2 ms/step against 140.5-142.0 at 32K (see Measured long context). The model is rated for 1,048,576 (YaRN x16 over 65,536); 1M does not fit (the prefill transient grows with prompt length) |
 | `--max-num-batched-tokens 2112 --long-prefill-token-threshold 2047` | the aligned-prefill chunk; 8192 does not fit |
 | `--kv-cache-memory-bytes 1073741824` | 1 GiB KV at the engine's `auto` (bf16) cache dtype. The token count vLLM reports depends on `--max-model-len` for this hybrid attention (sliding-window and compressed groups): 236,089 at 32K, 394,892 at 64K, 595,001 at 128K, 760,070 at 229K, 959,768 at 524K (1.83x one full-length request) |
-| `--no-enable-prefix-caching` | measured off |
+| `--no-enable-prefix-caching` | measured off for single-stream decode; `PREFIX_CACHING=1` turns it on for repeated prefixes (see Prefix caching (opt-in)) |
 | `B12X_AUTOTUNE=0` | the base image's optional per-kernel autotune sweep is hours; prebuilt artifacts are the measured path |
 | `--security-opt seccomp=unconfined --security-opt label=disable --ulimit memlock=-1` | the Engram reader initialises io_uring; a default seccomp profile aborts it |
 | `--shm-size=2g` | measured value; the engine's shared-memory use is small at `--max-num-seqs 1` |
@@ -205,6 +205,20 @@ The step-time cost of the longer limit is 1-5 %; the tok/s spread is mostly acce
 long prompts. Prefill does not slow with depth on this text (1.0-1.2K tok/s from 32K to
 520K); it is faster than the stdlib-source ladder above because log lines route to fewer
 experts.
+
+**Prefix caching (opt-in).** `PREFIX_CACHING=1 bash scripts/serve.sh` serves with
+`--enable-prefix-caching`; the default stays off. It pays when requests share a long prefix
+(multi-turn chat, agents re-sending history). Measured on two other boxes at `MAXLEN=32768`,
+`KVB=268435456` (off on one, on on the other; bench7 within 1 % between them), eight greedy lookups (`req=<id>` -> `latency_ms`) against one shared
+7.5K-token log prompt:
+
+| Prefix caching | Lookups correct | Request time, first | Requests 2-8 | bench7 ms/step |
+|---|---:|---:|---:|---:|
+| off | 8/8 | 10.6 s | 9.9-12.0 s | 142.4-149.4 |
+| on | 8/8 | 10.4 s | 1.6-2.6 s | 143.4 |
+
+bench7 prompts do not share prefixes, so its step time is the no-hit cost. Not measured at
+long `MAXLEN` or with prompts past 7.5K tokens.
 
 **Why not 1M.** The prefill transient grows with prompt length (about 0.3 GiB at 225K,
 0.4 GiB at 393K, 0.9 GiB at 520K). A `--max-model-len 1048576` server boots (KV 1.25 GiB,
