@@ -27,6 +27,14 @@ export HF_HUB_ENABLE_HF_TRANSFER=0   # xet path, not the legacy transfer
 
 mkdir -p "$MODEL_DIR"
 
+# Re-running this on a complete directory does NOT re-download the 326.6 GB:
+# huggingface_hub 2.x keeps a per-file record in $MODEL_DIR/.cache/huggingface/
+# download/*.metadata. With no record (e.g. a copied/hardlinked tree) it falls
+# back to hashing each local LFS file against its sha256 etag and skips the
+# transfer when they match -- a full 326.6 GB read pass, ~4 min, no network.
+# Only the three small non-LFS files (config.json, tokenizer.json,
+# tokenizer_config.json) are re-fetched. Measured, huggingface_hub 2.2.0.
+
 # The pack is 326.6 GB (two shards are ~101.5 GB each). Refuse to start a download
 # that cannot finish: an ENOSPC halfway leaves a directory that looks downloaded.
 # Bytes already in $MODEL_DIR (a resumed download) count toward the total.

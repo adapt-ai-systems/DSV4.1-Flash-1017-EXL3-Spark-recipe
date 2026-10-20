@@ -65,6 +65,28 @@ fi
 
 mkdir -p "$RUN" "$JIT_HOST"/{b12x/compile,b12x/cute,cute-dsl,tilelang,triton,nv-compute,vllm-r5o}
 
+# ---- first-boot compile headroom ------------------------------------------
+# An empty JIT cache makes this boot compile ~156 TileLang/B12X kernels. The
+# compile fan-out is the largest transient the recipe ever has: measured 25
+# concurrent nvcc/cicc/cc1plus/ptxas processes, 20-390 MB each, ~2.5 GB on top
+# of the engine. Min MemAvailable on a cold cache was 1.43 GiB against ~3.0 GiB
+# warm, so a box with ~1 GiB less headroom trips the 0.5 GiB guard and the
+# first boot is killed (the failure a from-scratch install reported at 432 MiB).
+# Serialising the compile costs nothing measurable (ready 302 s vs 305 s) and
+# buys +1.24 GiB of headroom (min 2.67 GiB). Warm caches are untouched.
+# A boot that reaches ready drops $JIT_HOST/.warm (see the stage watcher below),
+# so a cache left half-built by a killed first boot still counts as cold.
+if [ ! -f "$JIT_HOST/.warm" ]; then
+  export B12X_BIND_COMPILE_WORKERS="${B12X_BIND_COMPILE_WORKERS:-1}"
+  export B12X_STATE_COMPILE_WORKERS="${B12X_STATE_COMPILE_WORKERS:-1}"
+  export B12X_WEIGHTS_COMPILE_WORKERS="${B12X_WEIGHTS_COMPILE_WORKERS:-1}"
+  export TVM_NUM_THREADS="${TVM_NUM_THREADS:-1}"
+  export TVM_BIND_THREADS="${TVM_BIND_THREADS:-1}"
+  echo "cold JIT cache ($JIT_HOST, no .warm): serialising compile workers (B12X_*=1, TVM_NUM_THREADS=1)"
+  echo "  this first boot serves normally; once it is ready, run serve.sh again so the server"
+  echo "  runs with the measured worker settings (the cache is then warm and nothing recompiles)"
+fi
+
 [ -d "$MODEL_DIR" ] || { echo "model dir not found: $MODEL_DIR" >&2; exit 1; }
 [ -f "$ALIAS_DIR/experts.bin" ] || { echo "alias side file not found: $ALIAS_DIR/experts.bin (run build_cold_alias.sh)" >&2; exit 1; }
 [ -f "$ALIAS_DIR/manifest.json" ] || { echo "alias manifest not found: $ALIAS_DIR/manifest.json" >&2; exit 1; }
@@ -90,7 +112,14 @@ sync; sudo -n sh -c 'echo 1 > /proc/sys/vm/drop_caches'
 sleep 3
 
 BASE_SWAP=$(awk '/^SwapTotal:/{t=$2}/^SwapFree:/{f=$2}END{printf "%d", t-f}' /proc/meminfo)
-echo "MemAvailable: $(awk '/^MemAvailable:/{printf "%.1f", $2/1048576}' /proc/meminfo) GiB  swap_base: $BASE_SWAP KiB"
+IDLE_KIB=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
+echo "MemAvailable: $(awk -v k="$IDLE_KIB" 'BEGIN{printf "%.1f", k/1048576}') GiB  swap_base: $BASE_SWAP KiB"
+# The measurement box reads 119.3 GiB here and keeps ~3 GiB once serving at the
+# default 524288. Every GiB less at idle comes straight out of that headroom.
+if [ "$IDLE_KIB" -lt $((118 * 1048576)) ]; then
+  echo "WARNING: idle MemAvailable is under 118 GiB (measurement box: 119.3). Expect about" >&2
+  echo "         $(awk -v k="$IDLE_KIB" 'BEGIN{printf "%.1f", 3.0 - (119.3 - k/1048576)}') GiB at ready instead of ~3 GiB; stop other services or use MAXLEN=32768." >&2
+fi
 
 sudo -n docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
@@ -171,8 +200,25 @@ sudo -n docker run -d --name "$CONTAINER" \
 echo "LAUNCHED $CONTAINER ($(cat "$RUN/container_id.txt"))"
 echo "run dir: $RUN"
 
-# ---- memory guard ---------------------------------------------------------
+# ---- stage breadcrumbs -----------------------------------------------------
+# $RUN/stage used to be written once ("preflight") and never updated, so every
+# line of the guard log -- including the KILL line -- named a stage that had
+# long finished. Map vLLM's own log lines to a short stage instead.
 echo "preflight" >"$RUN/stage"
+# Detached (setsid nohup) so it outlives this shell and an ssh logout; it ends
+# when the container's log stream ends.
+setsid nohup bash -c '
+  sudo -n docker logs -f "$1" 2>&1 | while IFS= read -r line; do
+    case "$line" in
+      *"Starting to load model"*)       echo "load-weights" >"$2/stage" ;;
+      *"Graph capturing"*)              echo "graph-capture" >"$2/stage" ;;
+      *"init engine"*)                  echo "engine-init" >"$2/stage" ;;
+      *"Application startup complete"*) echo "ready" >"$2/stage"; : >"$3/.warm" ;;
+    esac
+  done' _ "$CONTAINER" "$RUN" "$JIT_HOST" >/dev/null 2>&1 &
+echo "stage watcher: pid $!"
+
+# ---- memory guard ---------------------------------------------------------
 sudo -n setsid nohup bash "$HERE/guard.sh" watch "$CONTAINER" "$RUN/stage" "$RUN/guard.log" 524288 "$BASE_SWAP" \
   >/dev/null 2>&1 &
 for _ in $(seq 1 100); do grep -q "guard: armed" "$RUN/guard.log" 2>/dev/null && break; sleep 0.1; done
