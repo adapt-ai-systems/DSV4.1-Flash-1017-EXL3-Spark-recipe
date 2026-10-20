@@ -62,6 +62,11 @@ The API is OpenAI-compatible at `http://<host>:8000/v1`, model id `dsv41`.
 `DRY_RUN=1 bash scripts/serve.sh` prints the full launch configuration without
 touching the box.
 
+The first boot after the steps above can run 1.5-2.6x slow for its whole life (heavy
+writes just landed on the serving disk). Once it is ready, run `bash scripts/guard.sh
+stop` and `bash scripts/serve.sh` again; the second boot runs at the measured speed (see
+"Keep the disk quiet").
+
 `build_image.sh` and `serve.sh` share one image tag (`IMAGE`, default
 `dsv41-1017-exl3:r6w`). If you build under another tag, pass the same `IMAGE=` to
 `serve.sh`. `serve.sh` refuses an image whose build labels do not match this
@@ -253,13 +258,26 @@ ready MemAvailable 1.99 GiB, no RoPE-cache trim to give memory back), but a 524K
 on it drove MemAvailable to 0.44 GiB and the guard stopped it. 524,288 is the largest
 limit that passed with margin.
 
-**Keep the disk quiet while serving.** Cold experts are read from NVMe on every step.
-One boot started right after ~10 GB of build output had been written to a 97 %-full
-disk measured 509.5 ms/step and 253 tok/s prefill for its whole 25-minute life; a reboot
-of the same configuration after `sync` and `drop_caches` was normal. The cause was not
-isolated further. `scripts/serve.sh` runs `sync` and drops caches before every boot;
-do not build images or copy large files on the serving disk while it runs, and
-re-bench after a warmup request before trusting a slow first boot.
+**Keep the disk quiet while serving, and restart once after building.** Cold experts
+are read from NVMe on every step. The first boot after heavy writes to the serving disk
+(an image build, the download, the alias build) can run slow for its whole life, and a
+second boot is normal. Measured on the measurement box (98 % full NVMe, same image and
+config, warm JIT cache):
+
+| Boot | bench7 ms/step |
+|---|---:|
+| first boot right after `docker build --no-cache` of the image | 358.6 (179-649) |
+| same, plus `drop_caches` and `compact_memory` before the boot | 214.3 (161-303) |
+| the next boot, no writes in between | 137.3 (131-145) |
+| a first boot after a build, re-benched 10 minutes later on the same boot | 190 -> 228 |
+| that configuration restarted | 140.2 |
+
+So after `build_image.sh`, `download_and_verify.sh` or `build_cold_alias.sh`, start the
+server, stop it (`scripts/guard.sh stop`) and start it again before you measure or rely
+on it; waiting on a slow boot does not help. An older case on a 97 %-full disk ran
+509.5 ms/step and 253 tok/s prefill for 25 minutes. The mechanism (memory layout at
+load versus the drive after heavy writes) is still being isolated. Do not build images
+or copy large files on the serving disk while it serves.
 
 ## Quality and correctness
 
