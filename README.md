@@ -59,8 +59,9 @@ linears (`docker/tp1_decode_tiles.py`). Nothing else in the base image is replac
 | `VLLM_EXL3_ATS_ALIAS=1` + `_LAYERS=38,39` + `_MTP=1` + `_EMBED=1` | ATS aliasing on, with the per-expert manifest in `/alias`. When the manifest lists experts (the cold set does), it decides membership and the layer list is ignored; the values are kept as measured |
 | `--compilation-config cudagraph_mode=FULL_DECODE_ONLY`, sizes 1..7 | decode runs as full CUDA graphs (measured +11-14 % over eager) |
 | TP1 decode tiles (`docker/tp1_decode_tiles.py`, baked into the image) | the base image's decode tile tables are keyed on TP4 shapes; at TP1 `block_K=256` for wo_b / wq_b / shared gate_up / down and a 32x256 tile for WO-A's 16-row bucket: -3.4 ms/step, bitwise-identical outputs |
+| `--max-model-len 229376` | 224K tokens (56 x 4096): the largest length that fits the 1 GiB KV pool (236,089 tokens) with room for the DSpark draft rows. The model is rated for 1,048,576 (YaRN x16 over 65,536); a 1M pool needs ~4.4 GiB of KV and would leave ~0.5 GiB MemAvailable at ready, which is the guard floor. Set `MAXLEN=32768` for the configuration the speed tables were measured on |
 | `--max-num-batched-tokens 2112 --long-prefill-token-threshold 2047` | the aligned-prefill chunk; 8192 does not fit |
-| `--kv-cache-memory-bytes 1073741824` | 1 GiB KV = 255,211 tokens at the engine's `auto` (bf16) cache dtype |
+| `--kv-cache-memory-bytes 1073741824` | 1 GiB KV = 236,089 tokens at the engine's `auto` (bf16) cache dtype (boot log `GPU KV cache size`) |
 | `--no-enable-prefix-caching` | measured off |
 | `B12X_AUTOTUNE=0` | the base image's optional per-kernel autotune sweep is hours; prebuilt artifacts are the measured path |
 | `--security-opt seccomp=unconfined --security-opt label=disable --ulimit memlock=-1` | the Engram reader initialises io_uring; a default seccomp profile aborts it |
@@ -91,7 +92,7 @@ once.
 | Steady-state MemAvailable | ~4.0 GiB |
 | Swap | 0 KiB growth, 0 kills |
 | Cold-expert alias side file | 9,228,943,360 B (8.59 GiB) on disk, mapped read-only |
-| KV pool | 1 GiB = 255,211 tokens |
+| KV pool | 1 GiB = 236,089 tokens |
 
 All-experts-resident does not fit under vLLM on this part: un-aliasing layers
 38 and 39 alone costs 4.6 GiB of transient load pressure and the guard kills the
@@ -185,8 +186,11 @@ halves varied-text prefill (446 vs 718 tok/s at ~7K), so 2112 stays.
   plugin trees (identical file hashes to the pinned commits) into the engine image;
   the baked build in `docker/Dockerfile` has not yet been run end to end.
 - **`--max-num-batched-tokens 8192` does not fit.** 2112 is the measured value.
-- **32K context.** `max_position_embeddings` is 1M and the KV pool is sized for
-  255K tokens, but only 32K was measured; longer needs its own ladder.
+- **Long context: TODO(confirm).** The default is now `--max-model-len 229376`. The speed
+  and prefill tables above were measured at `--max-model-len 32768`; the longest prompt
+  run so far is 27,949 tokens. Retrieval, prefill and decode at 64K, 128K and 225K, and
+  short-prompt decode at the 229K setting, are being measured; until those rows land,
+  `MAXLEN=32768` is the measured configuration.
 
 ## Do not
 

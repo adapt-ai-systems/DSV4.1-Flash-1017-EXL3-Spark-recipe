@@ -2,7 +2,7 @@
 
 What was tried on this deployment, in the order it was tried, including the
 things that lost. Every entry is a measurement on one DGX Spark (GB10, 121.7 GiB
-unified, ATS), TP1, 32K context, `--max-num-seqs 1`, bench7 with 512 generated
+unified, ATS), TP1, `--max-model-len 32768`, `--max-num-seqs 1`, bench7 with 512 generated
 tokens over three prompts per class. Numbers are `ms/step` (kernel speed) and
 `tok/s` (client-observed), because acceptance moves between runs and `tok/s`
 alone is noisy.
